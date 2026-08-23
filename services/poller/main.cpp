@@ -48,6 +48,16 @@ std::string now_in_eastern_time() {
 // not from an in-memory "last run" variable that would reset every time
 // cron starts a new process.
 int main() {
+    // Defensive, independent of any particular crash's root cause: stdout
+    // is normally fully buffered when redirected to a file/log (as cron
+    // does), so a hard abort (SIGABRT, segfault, ...) loses whatever hadn't
+    // been flushed yet -- the exact "crash aborts, poller.log shows
+    // nothing" gap. unitbuf flushes after every `std::cout <<`, so
+    // whatever was logged right up to the crash is actually on disk.
+    // std::cerr is already unit-buffered by default per the standard, so
+    // only cout needs this.
+    std::cout.setf(std::ios::unitbuf);
+
     const char* identity = std::getenv("SPACETRACK_IDENTITY");
     const char* password = std::getenv("SPACETRACK_PASSWORD");
     if (identity == nullptr || password == nullptr) {
