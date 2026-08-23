@@ -37,10 +37,14 @@ std::vector<std::string> allowed_origins_from_env() {
         return parse_origin_list(env);
     }
 
-    // Defaults if CORS_ALLOWED_ORIGINS isn't set: production frontend,
+    // Defaults if CORS_ALLOWED_ORIGINS isn't set: production frontend
+    // (both with and without www -- https://vitaleaerospace.com and
+    // https://www.vitaleaerospace.com are different origins per CORS
+    // rules, and the live frontend actually serves from the www one),
     // Vercel preview deployments, and the typical Vite dev server port.
     return {
         "https://vitaleaerospace.com",
+        "https://www.vitaleaerospace.com",
         "https://vitale-frontend.vercel.app",
         "http://localhost:5173",
     };
