@@ -21,6 +21,7 @@ public:
 protected:
     std::string build_query_url() const override;
     void process_response(const std::string& json_body) override;
+    std::string poller_name() const override { return "satcat"; }
 
 private:
     DbWriter writer_;

@@ -22,6 +22,7 @@ std::string SatcatPoller::build_query_url() const {
 
 void SatcatPoller::process_response(const std::string& json_body) {
     const std::vector<ObjectRecord> records = parse_satcat_response(json_body);
+    std::cout << "satcat poller: parsed " << records.size() << " record(s), diffing and upserting...\n";
 
     try {
         const auto events = writer_.upsert_objects_from_satcat(records, registry_);

@@ -1,5 +1,7 @@
 #include <cstdlib>
+#include <ctime>
 #include <iostream>
+#include <sstream>
 #include <vector>
 
 #include "db_connection.hpp"
@@ -17,6 +19,26 @@ namespace {
 // catalog bookkeeping.
 constexpr const char* kGpInterval = "1 hour";
 constexpr const char* kSatcatInterval = "24 hours";
+
+// Wall-clock timestamp in US Eastern time (EST/EDT, DST-aware), for log
+// lines that mark when a run happened. Uses the classic POSIX
+// TZ-env-var + localtime_r() approach rather than std::chrono's
+// <chrono> timezone support (std::chrono::locate_zone etc.): the latter is
+// still incomplete in libc++ as shipped with Apple Clang, which local macOS
+// dev builds use, while TZ + tzset() is portable across both that and the
+// Linux (EC2) deploy target this actually runs on.
+std::string now_in_eastern_time() {
+    setenv("TZ", "America/New_York", 1);
+    tzset();
+
+    const std::time_t now = std::time(nullptr);
+    std::tm local_tm{};
+    localtime_r(&now, &local_tm);
+
+    char buf[32];
+    std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S %Z", &local_tm);
+    return std::string(buf);
+}
 
 } // namespace
 
@@ -59,6 +81,21 @@ int main() {
         44723,  // STARLINK-1017
     };
 
+    // Printed every invocation, independent of whether GpPoller is actually
+    // due this hour -- so "which objects is this even configured to poll"
+    // is answerable from the log even on a cycle that skips it entirely.
+    {
+        std::ostringstream ids;
+        for (std::size_t i = 0; i < gp_targets.size(); ++i) {
+            if (i > 0) {
+                ids << ", ";
+            }
+            ids << gp_targets[i];
+        }
+        std::cout << "[scheduler] GpPoller configured with " << gp_targets.size()
+                  << " target norad id(s): " << ids.str() << '\n';
+    }
+
     try {
         vitale::poller::SpaceTrackClient client(identity, password);
         auto conn = vitale::shared::make_connection();
@@ -76,11 +113,11 @@ int main() {
         }
 
         if (scheduler_state.is_poller_due("gp", kGpInterval)) {
-            std::cout << "[scheduler] running GpPoller\n";
+            std::cout << "[scheduler] running GpPoller at " << now_in_eastern_time() << '\n';
             gp_poller.run();
             scheduler_state.mark_poller_run("gp");
         } else {
-            std::cout << "[scheduler] GpPoller not due yet\n";
+            std::cout << "[scheduler] GpPoller not due yet (checked at " << now_in_eastern_time() << ")\n";
         }
     } catch (const std::exception& e) {
         std::cerr << "poller: fatal error: " << e.what() << '\n';

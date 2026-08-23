@@ -33,6 +33,11 @@ protected:
     virtual std::string build_query_url() const = 0;
     virtual void process_response(const std::string& json_body) = 0;
 
+    // Short identifier ("gp", "satcat", ...) used to prefix every log line
+    // run() emits, so a shared cron log with both pollers interleaved in it
+    // is still unambiguous about which poller produced which line.
+    virtual std::string poller_name() const = 0;
+
     SpaceTrackClient& client_;
 };
 
