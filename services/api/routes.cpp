@@ -125,10 +125,20 @@ void register_routes(ApiApp& app) {
             // without it this query still runs, just as an unindexed
             // sequential scan (or fails outright if pg_trgm isn't enabled,
             // since `%` and similarity() aren't defined without it).
+            //
+            // COUNT(*) OVER() rides along in the same query/round-trip as
+            // the LIMIT 20 page -- it's the count of every matching row
+            // before the limit is applied, not just the 20 returned. Short
+            // or broad queries (a single letter, say) can match thousands
+            // via the ILIKE prefix clause alone, so the frontend needs this
+            // to show "20 of 4,213" rather than silently truncating.
             const pqxx::result rows = txn.exec(
                 "SELECT " + std::string(kObjectColumns) +
-                    " FROM objects "
-                    "WHERE object_name % $1 OR norad_cat_id::text = $1 "
+                    ", COUNT(*) OVER() AS total_matches "
+                    "FROM objects "
+                    "WHERE object_name ILIKE $1 || '%' "
+                    "   OR object_name % $1 "
+                    "   OR norad_cat_id::text = $1 "
                     "ORDER BY similarity(object_name, $1) DESC LIMIT 20",
                 pqxx::params{std::string(q)});
 
@@ -138,6 +148,7 @@ void register_routes(ApiApp& app) {
             }
             crow::json::wvalue response;
             response["objects"] = std::move(objects);
+            response["total_matches"] = rows.empty() ? 0 : rows[0]["total_matches"].as<std::int64_t>();
             return crow::response(response);
         } catch (const std::exception& e) {
             crow::json::wvalue error;
