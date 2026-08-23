@@ -42,7 +42,11 @@ std::optional<rule_engine::Snapshot> DbWriter::get_last_snapshot(int norad_cat_i
         return std::nullopt;
     }
 
-    const pqxx::row_ref row = rows[0];
+    // auto rather than pqxx::row_ref: that type doesn't exist in libpqxx
+    // 7.x (e.g. the version on the EC2 deploy target) -- result::operator[]
+    // returns pqxx::row there instead. Both support the same
+    // operator[]/.as<T>() surface used below.
+    const auto row = rows[0];
     rule_engine::Snapshot snap;
     snap.id = row["id"].as<std::int64_t>();
     snap.norad_cat_id = norad_cat_id;
