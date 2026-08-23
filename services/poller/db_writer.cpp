@@ -25,17 +25,51 @@ void DbWriter::upsert_object(const ObjectRecord& obj) {
     txn.commit();
 }
 
-std::optional<std::int64_t> DbWriter::last_snapshot_gp_id(int norad_cat_id) {
+std::optional<rule_engine::Snapshot> DbWriter::get_last_snapshot(int norad_cat_id) {
     pqxx::work txn(conn_);
     const pqxx::result rows = txn.exec(
-        "SELECT gp_id FROM snapshots WHERE norad_cat_id = $1 ORDER BY epoch DESC LIMIT 1",
+        "SELECT s.id, s.gp_id, s.epoch, s.mean_motion, s.eccentricity, s.inclination, "
+        "       s.ra_of_asc_node, s.arg_of_pericenter, s.mean_anomaly, s.semimajor_axis, "
+        "       s.period, s.apoapsis, s.periapsis, s.bstar, s.mean_motion_dot, "
+        "       s.mean_motion_ddot, s.element_set_no, s.rev_at_epoch, s.tle_line0, "
+        "       s.tle_line1, s.tle_line2, o.decay_date "
+        "FROM snapshots s JOIN objects o ON o.norad_cat_id = s.norad_cat_id "
+        "WHERE s.norad_cat_id = $1 ORDER BY s.epoch DESC LIMIT 1",
         pqxx::params{norad_cat_id});
     txn.commit();
 
     if (rows.empty()) {
         return std::nullopt;
     }
-    return rows[0][0].as<std::int64_t>();
+
+    const pqxx::row_ref row = rows[0];
+    rule_engine::Snapshot snap;
+    snap.id = row["id"].as<std::int64_t>();
+    snap.norad_cat_id = norad_cat_id;
+    snap.gp_id = row["gp_id"].as<std::int64_t>();
+    snap.epoch = row["epoch"].as<std::string>();
+    snap.mean_motion = row["mean_motion"].as<double>();
+    snap.eccentricity = row["eccentricity"].as<double>();
+    snap.inclination = row["inclination"].as<double>();
+    snap.ra_of_asc_node = row["ra_of_asc_node"].as<double>();
+    snap.arg_of_pericenter = row["arg_of_pericenter"].as<double>();
+    snap.mean_anomaly = row["mean_anomaly"].as<double>();
+    snap.semimajor_axis = row["semimajor_axis"].as<double>();
+    snap.period = row["period"].as<double>();
+    snap.apoapsis = row["apoapsis"].as<double>();
+    snap.periapsis = row["periapsis"].as<double>();
+    snap.bstar = row["bstar"].as<double>();
+    snap.mean_motion_dot = row["mean_motion_dot"].as<double>();
+    snap.mean_motion_ddot = row["mean_motion_ddot"].as<double>();
+    snap.element_set_no = row["element_set_no"].as<int>();
+    snap.rev_at_epoch = row["rev_at_epoch"].as<int>();
+    snap.tle_line0 = row["tle_line0"].as<std::string>();
+    snap.tle_line1 = row["tle_line1"].as<std::string>();
+    snap.tle_line2 = row["tle_line2"].as<std::string>();
+    if (!row["decay_date"].is_null()) {
+        snap.decay_date = row["decay_date"].as<std::string>();
+    }
+    return snap;
 }
 
 std::int64_t DbWriter::insert_snapshot(const rule_engine::Snapshot& snap) {

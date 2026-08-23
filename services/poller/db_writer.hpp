@@ -34,13 +34,19 @@ public:
 
     void upsert_object(const ObjectRecord& obj);
 
-    // Returns the gp_id of the most recent stored snapshot for this object,
-    // or nullopt if no snapshot exists yet. Used to implement the dedup
-    // rule: skip the insert entirely if the fetched gp_id matches.
-    std::optional<std::int64_t> last_snapshot_gp_id(int norad_cat_id);
+    // Returns the most recent stored snapshot for this object (joined with
+    // the object's current decay_date), or nullopt if this object has never
+    // been polled before. Callers must call this BEFORE upsert_object() for
+    // the same poll, since the returned decay_date reflects the
+    // pre-upsert state -- that's what makes it a valid "prev" snapshot for
+    // DecayDetectedRule to compare against the freshly fetched "curr" one.
+    //
+    // Also used to implement the dedup rule: skip the insert entirely if
+    // the freshly fetched gp_id matches this snapshot's gp_id.
+    std::optional<rule_engine::Snapshot> get_last_snapshot(int norad_cat_id);
 
     // Inserts a new snapshot row and returns its generated id. Callers are
-    // expected to have already checked last_snapshot_gp_id() to avoid
+    // expected to have already checked get_last_snapshot()'s gp_id to avoid
     // inserting a duplicate.
     std::int64_t insert_snapshot(const rule_engine::Snapshot& snap);
 

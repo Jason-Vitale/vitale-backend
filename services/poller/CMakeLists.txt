@@ -1,10 +1,12 @@
 find_package(CURL REQUIRED)
 find_package(libpqxx CONFIG REQUIRED)
+find_package(nlohmann_json CONFIG REQUIRED)
 
 add_executable(poller
     main.cpp
     space_track_client.cpp
     db_writer.cpp
+    gp_record.cpp
 )
 
 # The rest of the project stays on the C++20 baseline; this target opts into
@@ -20,4 +22,5 @@ target_link_libraries(poller PRIVATE
     rule_engine
     CURL::libcurl
     libpqxx::pqxx
+    nlohmann_json::nlohmann_json
 )

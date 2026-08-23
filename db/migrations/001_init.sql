@@ -57,3 +57,10 @@ CREATE TABLE audt_events (
     new_snapshot_id   BIGINT REFERENCES snapshots(id),
     created_at        TIMESTAMPTZ DEFAULT now()
 );
+
+-- Seed rows for every event_type_code the rule engine can currently emit
+-- (libs/rule_engine/src/*_rule.cpp) -- required since audt_events.event_type_code
+-- has a foreign key into this table.
+INSERT INTO event_types (code, display_name, description_template, severity) VALUES
+    ('maneuver_detected', 'Maneuver Detected', 'Inclination and/or semimajor axis changed beyond the noise threshold between {{prev_epoch}} and {{curr_epoch}}.', 'warning'),
+    ('decay_detected', 'Decay Detected', 'Object decay_date was set to {{decay_date}} as of {{curr_epoch}}.', 'info');
