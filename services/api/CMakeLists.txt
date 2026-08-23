@@ -18,6 +18,7 @@ pkg_check_modules(PQXX REQUIRED IMPORTED_TARGET libpqxx)
 add_executable(api
     main.cpp
     routes.cpp
+    cors_middleware.cpp
 )
 
 # Read-only service: does not need rule_engine.

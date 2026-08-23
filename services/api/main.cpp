@@ -5,7 +5,7 @@
 #include "routes.hpp"
 
 int main() {
-    crow::SimpleApp app;
+    vitale::api::ApiApp app;
     vitale::api::register_routes(app);
 
     const char* port_env = std::getenv("API_PORT");

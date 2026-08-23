@@ -81,7 +81,7 @@ crow::response object_audt_events_response(int norad_cat_id) {
 
 } // namespace
 
-void register_routes(crow::SimpleApp& app) {
+void register_routes(ApiApp& app) {
     CROW_ROUTE(app, "/objects")
     ([]() {
         try {
