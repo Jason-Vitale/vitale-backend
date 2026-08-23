@@ -41,6 +41,33 @@ crow::json::wvalue event_row_to_json(const Row& row) {
     return event;
 }
 
+// Shared by /objects/<int>/events and /objects/<int>/audt -- same data,
+// two route names (the frontend spec uses /audt; /events stays too since
+// it's already confirmed working against the deployed instance).
+crow::response object_audt_events_response(int norad_cat_id) {
+    try {
+        auto conn = vitale::shared::make_connection();
+        pqxx::work txn(conn);
+        const pqxx::result rows = txn.exec(
+            "SELECT id, event_type_code, event_time, detail_json FROM audt_events "
+            "WHERE norad_cat_id = $1 ORDER BY event_time DESC",
+            pqxx::params{norad_cat_id});
+
+        crow::json::wvalue::list events;
+        for (const auto& row : rows) {
+            events.push_back(event_row_to_json(row));
+        }
+        crow::json::wvalue response;
+        response["norad_cat_id"] = norad_cat_id;
+        response["events"] = std::move(events);
+        return crow::response(response);
+    } catch (const std::exception& e) {
+        crow::json::wvalue error;
+        error["error"] = e.what();
+        return crow::response(500, error);
+    }
+}
+
 } // namespace
 
 void register_routes(crow::SimpleApp& app) {
@@ -67,6 +94,72 @@ void register_routes(crow::SimpleApp& app) {
         }
     });
 
+    // Registered before /objects/<int> so a literal "search" segment can't
+    // be shadowed by the <int> parameter route, even though Crow's <int>
+    // matcher wouldn't accept a non-numeric segment anyway -- keep it
+    // explicit rather than relying on that.
+    CROW_ROUTE(app, "/objects/search")
+    ([](const crow::request& req) {
+        const char* q = req.url_params.get("q");
+        if (q == nullptr || *q == '\0') {
+            crow::json::wvalue error;
+            error["error"] = "missing required query parameter 'q'";
+            return crow::response(400, error);
+        }
+
+        try {
+            auto conn = vitale::shared::make_connection();
+            pqxx::work txn(conn);
+            // Requires db/migrations/002_add_search_index.sql (pg_trgm +
+            // the trigram index on object_name) to already be applied --
+            // without it this query still runs, just as an unindexed
+            // sequential scan (or fails outright if pg_trgm isn't enabled,
+            // since `%` and similarity() aren't defined without it).
+            const pqxx::result rows = txn.exec(
+                "SELECT norad_cat_id, object_name, object_id, object_type, country_code, "
+                "launch_date, site, rcs_size, decay_date FROM objects "
+                "WHERE object_name % $1 OR norad_cat_id::text = $1 "
+                "ORDER BY similarity(object_name, $1) DESC LIMIT 20",
+                pqxx::params{std::string(q)});
+
+            crow::json::wvalue::list objects;
+            for (const auto& row : rows) {
+                objects.push_back(object_row_to_json(row));
+            }
+            crow::json::wvalue response;
+            response["objects"] = std::move(objects);
+            return crow::response(response);
+        } catch (const std::exception& e) {
+            crow::json::wvalue error;
+            error["error"] = e.what();
+            return crow::response(500, error);
+        }
+    });
+
+    CROW_ROUTE(app, "/objects/<int>")
+    ([](int norad_cat_id) {
+        try {
+            auto conn = vitale::shared::make_connection();
+            pqxx::work txn(conn);
+            const pqxx::result rows = txn.exec(
+                "SELECT norad_cat_id, object_name, object_id, object_type, country_code, "
+                "launch_date, site, rcs_size, decay_date FROM objects WHERE norad_cat_id = $1",
+                pqxx::params{norad_cat_id});
+
+            if (rows.empty()) {
+                crow::json::wvalue error;
+                error["error"] = "object not found";
+                return crow::response(404, error);
+            }
+
+            return crow::response(object_row_to_json(rows[0]));
+        } catch (const std::exception& e) {
+            crow::json::wvalue error;
+            error["error"] = e.what();
+            return crow::response(500, error);
+        }
+    });
+
     CROW_ROUTE(app, "/stats")
     ([]() {
         try {
@@ -85,29 +178,10 @@ void register_routes(crow::SimpleApp& app) {
     });
 
     CROW_ROUTE(app, "/objects/<int>/events")
-    ([](int norad_cat_id) {
-        try {
-            auto conn = vitale::shared::make_connection();
-            pqxx::work txn(conn);
-            const pqxx::result rows = txn.exec(
-                "SELECT id, event_type_code, event_time, detail_json FROM audt_events "
-                "WHERE norad_cat_id = $1 ORDER BY event_time DESC",
-                pqxx::params{norad_cat_id});
+    ([](int norad_cat_id) { return object_audt_events_response(norad_cat_id); });
 
-            crow::json::wvalue::list events;
-            for (const auto& row : rows) {
-                events.push_back(event_row_to_json(row));
-            }
-            crow::json::wvalue response;
-            response["norad_cat_id"] = norad_cat_id;
-            response["events"] = std::move(events);
-            return crow::response(response);
-        } catch (const std::exception& e) {
-            crow::json::wvalue error;
-            error["error"] = e.what();
-            return crow::response(500, error);
-        }
-    });
+    CROW_ROUTE(app, "/objects/<int>/audt")
+    ([](int norad_cat_id) { return object_audt_events_response(norad_cat_id); });
 }
 
 } // namespace vitale::api
