@@ -33,10 +33,31 @@ int main() {
         return 1;
     }
 
-    // Stubbed target list for GpPoller -- see gp_poller.hpp. Which objects
-    // get actively GP-polled (vs merely catalogued via SatcatPoller) is an
-    // open product decision; this is a placeholder, not the final answer.
-    const std::vector<std::int64_t> gp_targets = {25544};
+    // TEMPORARY, pending two open items: (1) which objects get actively
+    // GP-polled vs merely catalogued via SatcatPoller is still an
+    // unsettled product decision (see gp_poller.hpp), and (2) we have not
+    // empirically confirmed a maximum comma-delimited NORAD_CAT_ID batch
+    // size for the gp class -- Space-Track's docs don't state one. Capped
+    // to a small, hand-picked, verified-real set of well-known active
+    // objects (looked up directly against our own objects table, not
+    // guessed) rather than deriving from the full ~35k-row catalog, so an
+    // hourly cron-driven GpPoller run can't hit an unknown batch-size or
+    // URL-length limit against the live account. Revisit both before
+    // expanding this list.
+    const std::vector<std::int64_t> gp_targets = {
+        25544,  // ISS (ZARYA)
+        20580,  // HST (Hubble Space Telescope)
+        25994,  // TERRA
+        31698,  // TERRA SAR X
+        37218,  // SKYTERRA 1
+        43013,  // NOAA 20
+        43491,  // FENGYUN 2H
+        49260,  // LANDSAT 9
+        66514,  // SENTINEL-6B
+        44714,  // STARLINK-1008
+        44718,  // STARLINK-1012
+        44723,  // STARLINK-1017
+    };
 
     try {
         vitale::poller::SpaceTrackClient client(identity, password);
