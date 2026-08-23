@@ -4,25 +4,66 @@ namespace vitale::poller {
 
 DbWriter::DbWriter(pqxx::connection& conn) : conn_(conn) {}
 
-void DbWriter::upsert_objects_from_satcat(const std::vector<ObjectRecord>& objs) {
+std::vector<rule_engine::DetectedEvent> DbWriter::upsert_objects_from_satcat(
+    const std::vector<ObjectRecord>& objs, const rule_engine::ObjectRuleRegistry& registry) {
     if (objs.empty()) {
-        return;
+        return {};
     }
 
     pqxx::work txn(conn_);
+    std::vector<rule_engine::DetectedEvent> fired_events;
+
     for (const auto& obj : objs) {
+        const pqxx::result prev_rows = txn.exec(
+            "SELECT object_name, object_type, rcs_size, decay_date FROM objects WHERE norad_cat_id = $1",
+            pqxx::params{obj.norad_cat_id});
+
+        if (!prev_rows.empty()) {
+            const auto prev_row = prev_rows[0];
+
+            rule_engine::ObjectState prev_state;
+            prev_state.norad_cat_id = obj.norad_cat_id;
+            prev_state.object_name = prev_row["object_name"].is_null() ? "" : prev_row["object_name"].as<std::string>();
+            prev_state.object_type = prev_row["object_type"].is_null() ? "" : prev_row["object_type"].as<std::string>();
+            prev_state.rcs_size = prev_row["rcs_size"].is_null() ? "" : prev_row["rcs_size"].as<std::string>();
+            if (!prev_row["decay_date"].is_null()) {
+                prev_state.decay_date = prev_row["decay_date"].as<std::string>();
+            }
+
+            rule_engine::ObjectState curr_state;
+            curr_state.norad_cat_id = obj.norad_cat_id;
+            curr_state.object_name = obj.object_name;
+            curr_state.object_type = obj.object_type;
+            curr_state.rcs_size = obj.rcs_size;
+            curr_state.decay_date = obj.decay_date;
+
+            for (auto& event : registry.evaluate_all(prev_state, curr_state)) {
+                // SATCAT-derived events aren't tied to a snapshot -- both
+                // snapshot id columns are left null.
+                txn.exec(
+                    "INSERT INTO audt_events (norad_cat_id, event_type_code, event_time, detail_json) "
+                    "VALUES ($1, $2, now(), $3::jsonb)",
+                    pqxx::params{obj.norad_cat_id, event.event_type_code, event.detail_json});
+                fired_events.push_back(std::move(event));
+            }
+        }
+
         txn.exec(
             "INSERT INTO objects "
             "(norad_cat_id, object_name, object_type, country_code, launch_date, site, rcs_size, decay_date, updated_at) "
             "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now()) "
             "ON CONFLICT (norad_cat_id) DO UPDATE SET "
             "object_name = EXCLUDED.object_name, "
+            "object_type = EXCLUDED.object_type, "
+            "rcs_size = EXCLUDED.rcs_size, "
             "decay_date = EXCLUDED.decay_date, "
             "updated_at = now()",
             pqxx::params{obj.norad_cat_id, obj.object_name, obj.object_type, obj.country_code,
                          obj.launch_date, obj.site, obj.rcs_size, obj.decay_date});
     }
     txn.commit();
+
+    return fired_events;
 }
 
 std::optional<rule_engine::Snapshot> DbWriter::get_last_snapshot(int norad_cat_id) {

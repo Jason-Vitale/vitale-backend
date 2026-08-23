@@ -1,24 +1,12 @@
 #pragma once
 
-#include <optional>
-#include <string>
-
+#include "rule_base.hpp"
 #include "snapshot.hpp"
 
 namespace rule_engine {
 
-struct DetectedEvent {
-    std::string event_type_code; // must match a row in `event_types.code`
-    std::string detail_json;     // serialized JSON, stored as-is into audt_events.detail_json
-};
-
-class Rule {
-public:
-    virtual ~Rule() = default;
-
-    // Compares two consecutive snapshots of the same object (prev.epoch < curr.epoch)
-    // and returns a DetectedEvent if this rule's condition fires.
-    virtual std::optional<DetectedEvent> evaluate(const Snapshot& prev, const Snapshot& curr) const = 0;
-};
+// Compares two consecutive GP snapshots of the same object (prev.epoch <
+// curr.epoch) and returns a DetectedEvent if this rule's condition fires.
+using Rule = RuleBase<Snapshot>;
 
 } // namespace rule_engine

@@ -7,6 +7,7 @@
 
 #include <pqxx/pqxx>
 
+#include "object_rule_registry.hpp"
 #include "rule.hpp"
 #include "snapshot.hpp"
 
@@ -48,11 +49,19 @@ public:
     // partially applying -- acceptable given SatcatPoller runs daily and
     // will simply retry the full catalog next cycle.
     //
-    // Deliberately refreshes only object_name/decay_date/updated_at on
-    // conflict -- fields like object_type, country_code, launch_date, site,
-    // rcs_size are treated as fixed facts about the object set on first
-    // sighting, not values SATCAT should keep overwriting on every poll.
-    void upsert_objects_from_satcat(const std::vector<ObjectRecord>& objs);
+    // Before each row is upserted, the existing `objects` row (if any) is
+    // fetched and diffed against the incoming one via `registry`; any fired
+    // events are written to audt_events in the same transaction as the
+    // upsert batch. Refreshes object_name/object_type/rcs_size/decay_date/
+    // updated_at on conflict -- object_id, country_code, launch_date, site
+    // are still treated as fixed facts set on first sighting, since no rule
+    // tracks changes to them.
+    //
+    // Returns every event fired across the whole batch (for logging by the
+    // caller); on failure, no events fired and nothing else in the batch is
+    // written either, since the whole thing is one transaction.
+    std::vector<rule_engine::DetectedEvent> upsert_objects_from_satcat(
+        const std::vector<ObjectRecord>& objs, const rule_engine::ObjectRuleRegistry& registry);
 
     // Returns the most recent stored snapshot for this object (joined with
     // the object's current decay_date), or nullopt if this object has never

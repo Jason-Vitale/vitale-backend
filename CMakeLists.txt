@@ -35,6 +35,8 @@ if(APPLE)
     endif()
 endif()
 
+include(CTest)
+
 add_subdirectory(libs/rule_engine)
 add_subdirectory(services/poller)
 add_subdirectory(services/api)

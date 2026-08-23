@@ -115,18 +115,52 @@ snapshot's `gp_id` for that object, the insert is skipped entirely — no
 
 ## Rule engine
 
-`libs/rule_engine` defines a small `Rule` interface
-(`evaluate(prev, curr) -> optional<DetectedEvent>`) and a `RuleRegistry` that
-runs every registered rule and collects all firings (more than one rule can
-fire for the same snapshot pair). Built-in rules:
+`libs/rule_engine` is built around one templated pattern
+(`RuleBase<State>` / `RuleRegistryBase<State>` in `rule_base.hpp`):
+compare two consecutive states of the same object and optionally return a
+`DetectedEvent`; a registry runs every registered rule and collects all
+firings (more than one rule can fire for the same pair). Two instantiations
+of that pattern exist, since GP and SATCAT data are different shapes:
 
-- **`ManeuverDetectedRule`** — fires when `inclination` and/or
-  `semimajor_axis` change beyond a noise threshold between consecutive
-  snapshots. Thresholds (`kInclinationDeltaThresholdDeg`,
-  `kSemimajorAxisDeltaThresholdKm`) are placeholder constants in
-  `maneuver_detected_rule.cpp` and need tuning against real GP history.
+- **`Rule` / `RuleRegistry`** (`rule.hpp` / `rule_registry.hpp`) — compares
+  consecutive `Snapshot` rows (GP data). Run by `GpPoller` after every
+  non-deduped snapshot insert, against the immediately preceding snapshot
+  for that object.
+- **`ObjectRule` / `ObjectRuleRegistry`** (`object_rule.hpp` /
+  `object_rule_registry.hpp`) — compares consecutive `ObjectState` rows
+  (SATCAT catalog metadata). Run by `SatcatPoller`, which fetches the
+  existing `objects` row before each upsert overwrites it.
+
+Built-in GP rules (`make_default_rule_registry()`):
+
+- **`ManeuverDetectedRule`** — fires when `inclination` changes by more
+  than 0.01° and/or `semimajor_axis` changes by more than 1.0 km.
+- **`RaanShiftRule`** — fires when `ra_of_asc_node` changes by more than
+  0.01°. Kept separate from maneuver detection since a plane-change/RAAN
+  shift is a meaningfully different event from an inclination/altitude burn.
+- **`EccentricityChangeRule`** — fires when `eccentricity` changes by more
+  than 0.001.
+- **`DragChangeRule`** — fires when `bstar` changes by more than 50%
+  relative to the previous value; falls back to an absolute threshold
+  (`|Δbstar| > 0.0001`) when the previous value is zero/near-zero, to avoid
+  dividing by (near) zero.
+
+Built-in SATCAT rules (`make_default_object_rule_registry()`):
+
 - **`DecayDetectedRule`** — fires when `decay_date` flips from null to
-  non-null between consecutive snapshots.
+  non-null. SATCAT-based rather than GP-based: the GP poller's query
+  excludes objects that already have a decay date, so a GP snapshot pair
+  can never observe this transition.
+- **`ObjectRenamedRule`** — fires when `object_name` changes.
+- **`ObjectTypeChangedRule`** — fires when `object_type` changes (e.g.
+  `PAYLOAD` → `DEBRIS`). Higher severity than the other SATCAT rules — a
+  reclassification, e.g. after a breakup, is significant.
+- **`RcsSizeChangedRule`** — fires when `rcs_size` changes.
+
+Out of scope for the current rule set (would need a different interface
+than two-state `evaluate(prev, curr)`): trend-based events requiring
+multi-snapshot history (e.g. sustained altitude decay), and cross-object
+fragmentation/breakup detection.
 
 ## Status / next steps
 

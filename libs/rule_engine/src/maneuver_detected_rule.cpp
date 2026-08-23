@@ -10,10 +10,7 @@
 namespace rule_engine {
 namespace {
 
-// Placeholder noise thresholds -- real satellites jitter within normal orbit
-// determination error even with no maneuver. These need tuning against real
-// GP history before this rule is trusted in production; treat as TBD.
-constexpr double kInclinationDeltaThresholdDeg = 0.05;
+constexpr double kInclinationDeltaThresholdDeg = 0.01;
 constexpr double kSemimajorAxisDeltaThresholdKm = 1.0;
 
 class ManeuverDetectedRule : public Rule {
@@ -34,6 +31,8 @@ public:
         detail["semimajor_axis_delta_km"] = semimajor_axis_delta;
         detail["inclination_threshold_deg"] = kInclinationDeltaThresholdDeg;
         detail["semimajor_axis_threshold_km"] = kSemimajorAxisDeltaThresholdKm;
+        detail["inclination_threshold_crossed"] = inclination_fired;
+        detail["semimajor_axis_threshold_crossed"] = semimajor_axis_fired;
         detail["prev_epoch"] = prev.epoch;
         detail["curr_epoch"] = curr.epoch;
 
