@@ -131,8 +131,29 @@ int main() {
         }
     } catch (const std::exception& e) {
         std::cerr << "poller: fatal error: " << e.what() << '\n';
-        return 1;
+        // quick_exit, not return -- see the comment below. All real work is
+        // done; only the catch block's own already-flushed cerr write and
+        // this exit code need to survive.
+        std::quick_exit(1);
     }
 
-    return 0;
+    // quick_exit rather than a normal return: works around a known libpqxx
+    // bug (jtv/libpqxx#1007, "Double free() in global object destruction")
+    // -- a static-storage variable in libpqxx's header (pqxx::internal::
+    // type_name) gets external linkage under some GCC versions, an ODR
+    // violation that leads to the same underlying object being destroyed
+    // twice as shared libraries unload during normal exit's
+    // __cxa_finalize/_dl_fini sequence -- reproduced on EC2 (Debian/Ubuntu,
+    // libpqxx 7.x) as "double free or corruption (!prev)" independent of
+    // which code path ran beforehand; confirmed absent under ASan locally,
+    // where libpqxx 8.x (no longer has the offending variable) is used.
+    // quick_exit skips the destructor/static-teardown sequence entirely
+    // rather than relying on a libpqxx version we don't control in
+    // production. Safe here: every DB write in this program is already
+    // committed synchronously inside DbWriter's methods (nothing relies on
+    // a destructor running for correctness), stdout is already flushed
+    // unconditionally per write (see the unitbuf setting above), and
+    // nothing in this program registers an std::at_quick_exit handler that
+    // would need to run.
+    std::quick_exit(0);
 }
