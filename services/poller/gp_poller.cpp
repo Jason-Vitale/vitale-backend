@@ -41,7 +41,16 @@ std::string GpPoller::build_query_url() const {
 void GpPoller::process_response(const std::string& json_body) {
     const std::vector<GpRecord> records = parse_gp_response(json_body);
 
+    // Logged unconditionally, before touching any individual record: this is
+    // the one line that distinguishes "the request only asked for N objects"
+    // from "Space-Track's response silently dropped some of the N we asked
+    // for" (e.g. objects whose most recent TLE falls outside the epoch
+    // filter) from "the per-record loop below never ran".
+    std::cout << "gp poller: requested " << target_norad_ids_.size() << " target(s), received "
+              << records.size() << " record(s) from Space-Track\n";
+
     for (const auto& record : records) {
+        std::cout << "gp poller: norad " << record.object.norad_cat_id << ": checking\n";
         try {
             const auto prev = writer_.get_last_snapshot(record.object.norad_cat_id);
 
