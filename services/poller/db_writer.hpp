@@ -30,6 +30,12 @@ struct ObjectRecord {
 // insert_snapshot(), and insert_event(). Only GpPoller touches snapshots/
 // audt_events; only SatcatPoller touches objects. The api service never
 // uses this class -- it is read-only and talks to Postgres directly.
+//
+// Also backs the scheduler in main.cpp via is_poller_due()/mark_poller_run()
+// -- the poller is deployed as an hourly cron job (a fresh process each
+// time), not one long-lived process, so "when did each poller last run"
+// has to live in Postgres, not in an in-memory variable that resets every
+// invocation.
 class DbWriter {
 public:
     explicit DbWriter(pqxx::connection& conn);
@@ -65,6 +71,24 @@ public:
         const rule_engine::DetectedEvent& event,
         std::optional<std::int64_t> prev_snapshot_id,
         std::int64_t new_snapshot_id);
+
+    // Returns true if `poller_name` (e.g. "satcat", "gp") has never
+    // recorded a run, or if at least `pg_interval` -- a Postgres interval
+    // literal such as "1 hour" or "24 hours" -- has elapsed since its last
+    // recorded run. The interval math happens server-side in Postgres
+    // rather than by parsing a timestamp back into C++, since that's what
+    // Postgres is actually good at and it sidesteps any cross-platform
+    // chrono-parsing portability questions.
+    bool is_poller_due(const std::string& poller_name, const std::string& pg_interval);
+
+    // Records that `poller_name` just ran, right now. Call this
+    // unconditionally after run() returns, even if that run failed
+    // internally (Poller::run() logs and swallows its own errors) --
+    // otherwise a persistent auth/network failure would retry every cron
+    // tick instead of waiting out its normal interval like a healthy run
+    // would, which risks the same rate-limit problem this table exists to
+    // prevent.
+    void mark_poller_run(const std::string& poller_name);
 
 private:
     pqxx::connection& conn_;

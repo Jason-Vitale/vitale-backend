@@ -109,4 +109,26 @@ void DbWriter::insert_event(
     txn.commit();
 }
 
+bool DbWriter::is_poller_due(const std::string& poller_name, const std::string& pg_interval) {
+    pqxx::work txn(conn_);
+    const pqxx::result rows = txn.exec(
+        "SELECT (last_run_at <= now() - $2::interval) FROM poller_state WHERE poller_name = $1",
+        pqxx::params{poller_name, pg_interval});
+    txn.commit();
+
+    if (rows.empty()) {
+        return true; // never recorded a run before
+    }
+    return rows[0][0].as<bool>();
+}
+
+void DbWriter::mark_poller_run(const std::string& poller_name) {
+    pqxx::work txn(conn_);
+    txn.exec(
+        "INSERT INTO poller_state (poller_name, last_run_at) VALUES ($1, now()) "
+        "ON CONFLICT (poller_name) DO UPDATE SET last_run_at = now()",
+        pqxx::params{poller_name});
+    txn.commit();
+}
+
 } // namespace vitale::poller
