@@ -163,7 +163,13 @@ void register_routes(crow::SimpleApp& app) {
             auto conn = vitale::shared::make_connection();
             pqxx::work txn(conn);
             // hit_count DESC is the ranking; norad_cat_id ASC is only a
-            // deterministic tie-break (most objects start at hit_count 0).
+            // deterministic tie-break, not a meaningful secondary sort --
+            // with ~35k objects starting at hit_count 0, this list will be
+            // padded past however many have real hits with the
+            // lowest-numbered (oldest-catalogued) never-viewed objects,
+            // not anything actually "popular". Accepted tradeoff: always
+            // returns exactly `limit` results rather than fewer while
+            // traffic is still low.
             const pqxx::result rows = txn.exec(
                 "SELECT " + std::string(kObjectColumns) +
                     " FROM objects ORDER BY hit_count DESC, norad_cat_id ASC LIMIT $1",
