@@ -40,6 +40,14 @@ std::string now_in_eastern_time() {
     return std::string(buf);
 }
 
+// Bounds each cron invocation's output in poller.log so individual runs are
+// easy to pick out visually when scrolling/grepping a log that accumulates
+// many runs over time -- printed regardless of whether the run did any real
+// polling work or just hit due-checks.
+void print_run_separator() {
+    std::cout << "================== " << now_in_eastern_time() << " ==================\n";
+}
+
 } // namespace
 
 // Deployed as an hourly cron job -- a fresh process each invocation, not a
@@ -58,10 +66,13 @@ int main() {
     // only cout needs this.
     std::cout.setf(std::ios::unitbuf);
 
+    print_run_separator();
+
     const char* identity = std::getenv("SPACETRACK_IDENTITY");
     const char* password = std::getenv("SPACETRACK_PASSWORD");
     if (identity == nullptr || password == nullptr) {
         std::cerr << "SPACETRACK_IDENTITY and SPACETRACK_PASSWORD must be set\n";
+        print_run_separator();
         return 1;
     }
 
@@ -131,6 +142,7 @@ int main() {
         }
     } catch (const std::exception& e) {
         std::cerr << "poller: fatal error: " << e.what() << '\n';
+        print_run_separator();
         // quick_exit, not return -- see the comment below. All real work is
         // done; only the catch block's own already-flushed cerr write and
         // this exit code need to survive.
@@ -155,5 +167,6 @@ int main() {
     // unconditionally per write (see the unitbuf setting above), and
     // nothing in this program registers an std::at_quick_exit handler that
     // would need to run.
+    print_run_separator();
     std::quick_exit(0);
 }
