@@ -57,6 +57,23 @@ void register_routes(crow::SimpleApp& app) {
         }
     });
 
+    CROW_ROUTE(app, "/stats")
+    ([]() {
+        try {
+            auto conn = vitale::shared::make_connection();
+            pqxx::work txn(conn);
+            const pqxx::result rows = txn.exec("SELECT count(*) FROM objects");
+
+            crow::json::wvalue response;
+            response["tracked_objects"] = rows[0][0].as<std::int64_t>();
+            return crow::response(response);
+        } catch (const std::exception& e) {
+            crow::json::wvalue error;
+            error["error"] = e.what();
+            return crow::response(500, error);
+        }
+    });
+
     CROW_ROUTE(app, "/objects/<int>/events")
     ([](int norad_cat_id) {
         try {
