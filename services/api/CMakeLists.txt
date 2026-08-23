@@ -1,5 +1,9 @@
 find_package(Crow CONFIG REQUIRED)
-find_package(libpqxx CONFIG REQUIRED)
+
+# See services/poller/CMakeLists.txt: Debian/Ubuntu's libpqxx-dev has no
+# CMake config package, only pkg-config, unlike Homebrew's libpqxx.
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(PQXX REQUIRED IMPORTED_TARGET libpqxx)
 
 add_executable(api
     main.cpp
@@ -15,5 +19,5 @@ target_include_directories(api PRIVATE
 
 target_link_libraries(api PRIVATE
     Crow::Crow
-    libpqxx::pqxx
+    PkgConfig::PQXX
 )

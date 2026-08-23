@@ -1,6 +1,12 @@
 find_package(CURL REQUIRED)
-find_package(libpqxx CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
+
+# Debian/Ubuntu's libpqxx-dev (e.g. on the EC2 deploy target) ships a
+# pkg-config file but no CMake config package, unlike Homebrew's libpqxx --
+# so look it up via pkg-config on every platform rather than branching on
+# find_package(libpqxx CONFIG) succeeding or not.
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(PQXX REQUIRED IMPORTED_TARGET libpqxx)
 
 add_executable(poller
     main.cpp
@@ -25,6 +31,6 @@ target_include_directories(poller PRIVATE
 target_link_libraries(poller PRIVATE
     rule_engine
     CURL::libcurl
-    libpqxx::pqxx
+    PkgConfig::PQXX
     nlohmann_json::nlohmann_json
 )
