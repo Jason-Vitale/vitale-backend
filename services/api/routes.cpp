@@ -1,5 +1,8 @@
 #include "routes.hpp"
 
+#include <algorithm>
+#include <cstdlib>
+
 #include <pqxx/pqxx>
 
 #include "db_connection.hpp"
@@ -7,6 +10,13 @@
 namespace vitale::api {
 
 namespace {
+
+constexpr const char* kObjectColumns =
+    "norad_cat_id, object_name, object_id, object_type, country_code, "
+    "launch_date, site, rcs_size, decay_date, hit_count";
+
+constexpr int kDefaultPopularLimit = 10;
+constexpr int kMaxPopularLimit = 100;
 
 // Templated rather than typed to pqxx::row / pqxx::row_ref: libpqxx 8.x's
 // result iteration/indexing yields row_ref, but 7.x (e.g. the version
@@ -28,6 +38,7 @@ crow::json::wvalue object_row_to_json(const Row& row) {
     obj["site"] = row["site"].is_null() ? "" : row["site"].template as<std::string>();
     obj["rcs_size"] = row["rcs_size"].is_null() ? "" : row["rcs_size"].template as<std::string>();
     obj["decay_date"] = row["decay_date"].is_null() ? "" : row["decay_date"].template as<std::string>();
+    obj["hit_count"] = row["hit_count"].template as<std::int64_t>();
     return obj;
 }
 
@@ -77,8 +88,7 @@ void register_routes(crow::SimpleApp& app) {
             auto conn = vitale::shared::make_connection();
             pqxx::work txn(conn);
             const pqxx::result rows = txn.exec(
-                "SELECT norad_cat_id, object_name, object_id, object_type, country_code, "
-                "launch_date, site, rcs_size, decay_date FROM objects ORDER BY norad_cat_id");
+                "SELECT " + std::string(kObjectColumns) + " FROM objects ORDER BY norad_cat_id");
 
             crow::json::wvalue::list objects;
             for (const auto& row : rows) {
@@ -94,10 +104,10 @@ void register_routes(crow::SimpleApp& app) {
         }
     });
 
-    // Registered before /objects/<int> so a literal "search" segment can't
-    // be shadowed by the <int> parameter route, even though Crow's <int>
-    // matcher wouldn't accept a non-numeric segment anyway -- keep it
-    // explicit rather than relying on that.
+    // Registered before /objects/<int> so a literal "search"/"popular"
+    // segment can't be shadowed by the <int> parameter route, even though
+    // Crow's <int> matcher wouldn't accept a non-numeric segment anyway --
+    // keep it explicit rather than relying on that.
     CROW_ROUTE(app, "/objects/search")
     ([](const crow::request& req) {
         const char* q = req.url_params.get("q");
@@ -116,11 +126,48 @@ void register_routes(crow::SimpleApp& app) {
             // sequential scan (or fails outright if pg_trgm isn't enabled,
             // since `%` and similarity() aren't defined without it).
             const pqxx::result rows = txn.exec(
-                "SELECT norad_cat_id, object_name, object_id, object_type, country_code, "
-                "launch_date, site, rcs_size, decay_date FROM objects "
-                "WHERE object_name % $1 OR norad_cat_id::text = $1 "
-                "ORDER BY similarity(object_name, $1) DESC LIMIT 20",
+                "SELECT " + std::string(kObjectColumns) +
+                    " FROM objects "
+                    "WHERE object_name % $1 OR norad_cat_id::text = $1 "
+                    "ORDER BY similarity(object_name, $1) DESC LIMIT 20",
                 pqxx::params{std::string(q)});
+
+            crow::json::wvalue::list objects;
+            for (const auto& row : rows) {
+                objects.push_back(object_row_to_json(row));
+            }
+            crow::json::wvalue response;
+            response["objects"] = std::move(objects);
+            return crow::response(response);
+        } catch (const std::exception& e) {
+            crow::json::wvalue error;
+            error["error"] = e.what();
+            return crow::response(500, error);
+        }
+    });
+
+    CROW_ROUTE(app, "/objects/popular")
+    ([](const crow::request& req) {
+        int limit = kDefaultPopularLimit;
+        if (const char* limit_param = req.url_params.get("limit"); limit_param != nullptr) {
+            limit = std::atoi(limit_param);
+            if (limit <= 0) {
+                crow::json::wvalue error;
+                error["error"] = "'limit' must be a positive integer";
+                return crow::response(400, error);
+            }
+            limit = std::min(limit, kMaxPopularLimit);
+        }
+
+        try {
+            auto conn = vitale::shared::make_connection();
+            pqxx::work txn(conn);
+            // hit_count DESC is the ranking; norad_cat_id ASC is only a
+            // deterministic tie-break (most objects start at hit_count 0).
+            const pqxx::result rows = txn.exec(
+                "SELECT " + std::string(kObjectColumns) +
+                    " FROM objects ORDER BY hit_count DESC, norad_cat_id ASC LIMIT $1",
+                pqxx::params{limit});
 
             crow::json::wvalue::list objects;
             for (const auto& row : rows) {
@@ -141,18 +188,25 @@ void register_routes(crow::SimpleApp& app) {
         try {
             auto conn = vitale::shared::make_connection();
             pqxx::work txn(conn);
+            // Increment and fetch atomically in one round trip, rather than
+            // a plain SELECT -- this is the one endpoint that counts as a
+            // "hit" toward an object's popularity.
             const pqxx::result rows = txn.exec(
-                "SELECT norad_cat_id, object_name, object_id, object_type, country_code, "
-                "launch_date, site, rcs_size, decay_date FROM objects WHERE norad_cat_id = $1",
+                "UPDATE objects SET hit_count = hit_count + 1 "
+                "WHERE norad_cat_id = $1 RETURNING " +
+                    std::string(kObjectColumns),
                 pqxx::params{norad_cat_id});
 
             if (rows.empty()) {
+                txn.commit();
                 crow::json::wvalue error;
                 error["error"] = "object not found";
                 return crow::response(404, error);
             }
 
-            return crow::response(object_row_to_json(rows[0]));
+            auto json = object_row_to_json(rows[0]);
+            txn.commit();
+            return crow::response(json);
         } catch (const std::exception& e) {
             crow::json::wvalue error;
             error["error"] = e.what();
