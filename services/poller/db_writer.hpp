@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include <pqxx/pqxx>
 
@@ -33,12 +34,19 @@ class DbWriter {
 public:
     explicit DbWriter(pqxx::connection& conn);
 
-    // Upserts catalog metadata from a SATCAT record. Deliberately refreshes
-    // only object_name/decay_date/updated_at on conflict -- fields like
-    // object_type, country_code, launch_date, site, rcs_size are treated as
-    // fixed facts about the object set on first sighting, not values SATCAT
-    // should keep overwriting on every daily poll.
-    void upsert_object_from_satcat(const ObjectRecord& obj);
+    // Upserts catalog metadata from a full SATCAT response in ONE
+    // transaction (one commit / WAL flush for the whole batch, not one per
+    // row) -- a live run against ~20k+ active objects with a
+    // commit-per-row implementation took over 20 minutes; this is the fix.
+    // Trade-off: if any row fails, the whole batch rolls back rather than
+    // partially applying -- acceptable given SatcatPoller runs daily and
+    // will simply retry the full catalog next cycle.
+    //
+    // Deliberately refreshes only object_name/decay_date/updated_at on
+    // conflict -- fields like object_type, country_code, launch_date, site,
+    // rcs_size are treated as fixed facts about the object set on first
+    // sighting, not values SATCAT should keep overwriting on every poll.
+    void upsert_objects_from_satcat(const std::vector<ObjectRecord>& objs);
 
     // Returns the most recent stored snapshot for this object (joined with
     // the object's current decay_date), or nullopt if this object has never

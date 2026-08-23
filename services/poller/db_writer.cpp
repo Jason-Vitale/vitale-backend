@@ -4,18 +4,24 @@ namespace vitale::poller {
 
 DbWriter::DbWriter(pqxx::connection& conn) : conn_(conn) {}
 
-void DbWriter::upsert_object_from_satcat(const ObjectRecord& obj) {
+void DbWriter::upsert_objects_from_satcat(const std::vector<ObjectRecord>& objs) {
+    if (objs.empty()) {
+        return;
+    }
+
     pqxx::work txn(conn_);
-    txn.exec(
-        "INSERT INTO objects "
-        "(norad_cat_id, object_name, object_type, country_code, launch_date, site, rcs_size, decay_date, updated_at) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now()) "
-        "ON CONFLICT (norad_cat_id) DO UPDATE SET "
-        "object_name = EXCLUDED.object_name, "
-        "decay_date = EXCLUDED.decay_date, "
-        "updated_at = now()",
-        pqxx::params{obj.norad_cat_id, obj.object_name, obj.object_type, obj.country_code,
-                     obj.launch_date, obj.site, obj.rcs_size, obj.decay_date});
+    for (const auto& obj : objs) {
+        txn.exec(
+            "INSERT INTO objects "
+            "(norad_cat_id, object_name, object_type, country_code, launch_date, site, rcs_size, decay_date, updated_at) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now()) "
+            "ON CONFLICT (norad_cat_id) DO UPDATE SET "
+            "object_name = EXCLUDED.object_name, "
+            "decay_date = EXCLUDED.decay_date, "
+            "updated_at = now()",
+            pqxx::params{obj.norad_cat_id, obj.object_name, obj.object_type, obj.country_code,
+                         obj.launch_date, obj.site, obj.rcs_size, obj.decay_date});
+    }
     txn.commit();
 }
 

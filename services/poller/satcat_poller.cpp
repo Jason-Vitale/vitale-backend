@@ -23,16 +23,12 @@ std::string SatcatPoller::build_query_url() const {
 void SatcatPoller::process_response(const std::string& json_body) {
     const std::vector<ObjectRecord> records = parse_satcat_response(json_body);
 
-    for (const auto& record : records) {
-        try {
-            writer_.upsert_object_from_satcat(record);
-        } catch (const std::exception& e) {
-            std::cerr << "satcat poller: failed to upsert norad " << record.norad_cat_id << ": " << e.what()
-                      << '\n';
-        }
+    try {
+        writer_.upsert_objects_from_satcat(records);
+        std::cout << "satcat poller: upserted " << records.size() << " object(s)\n";
+    } catch (const std::exception& e) {
+        std::cerr << "satcat poller: batch upsert failed, nothing committed: " << e.what() << '\n';
     }
-
-    std::cout << "satcat poller: upserted " << records.size() << " object(s)\n";
 }
 
 } // namespace vitale::poller
