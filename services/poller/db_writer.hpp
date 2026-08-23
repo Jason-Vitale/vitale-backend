@@ -24,25 +24,27 @@ struct ObjectRecord {
     std::optional<std::string> decay_date;
 };
 
-// Owns the write path into Postgres for the poller: upserting object
-// metadata, inserting new snapshots (with dedup on gp_id), and recording
-// AUDT events produced by the rule engine. The api service never uses this
-// class -- it is read-only and talks to Postgres directly.
+// Owns the write path into Postgres shared by both pollers: SatcatPoller
+// calls upsert_object_from_satcat(); GpPoller calls get_last_snapshot(),
+// insert_snapshot(), and insert_event(). Only GpPoller touches snapshots/
+// audt_events; only SatcatPoller touches objects. The api service never
+// uses this class -- it is read-only and talks to Postgres directly.
 class DbWriter {
 public:
     explicit DbWriter(pqxx::connection& conn);
 
-    void upsert_object(const ObjectRecord& obj);
+    // Upserts catalog metadata from a SATCAT record. Deliberately refreshes
+    // only object_name/decay_date/updated_at on conflict -- fields like
+    // object_type, country_code, launch_date, site, rcs_size are treated as
+    // fixed facts about the object set on first sighting, not values SATCAT
+    // should keep overwriting on every daily poll.
+    void upsert_object_from_satcat(const ObjectRecord& obj);
 
     // Returns the most recent stored snapshot for this object (joined with
     // the object's current decay_date), or nullopt if this object has never
-    // been polled before. Callers must call this BEFORE upsert_object() for
-    // the same poll, since the returned decay_date reflects the
-    // pre-upsert state -- that's what makes it a valid "prev" snapshot for
-    // DecayDetectedRule to compare against the freshly fetched "curr" one.
-    //
-    // Also used to implement the dedup rule: skip the insert entirely if
-    // the freshly fetched gp_id matches this snapshot's gp_id.
+    // been polled before. Used both as the "prev" snapshot for rule
+    // evaluation and, via its gp_id, to implement the dedup rule: skip the
+    // insert entirely if the freshly fetched gp_id matches.
     std::optional<rule_engine::Snapshot> get_last_snapshot(int norad_cat_id);
 
     // Inserts a new snapshot row and returns its generated id. Callers are

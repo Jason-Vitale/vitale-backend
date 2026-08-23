@@ -7,6 +7,10 @@ add_executable(poller
     space_track_client.cpp
     db_writer.cpp
     gp_record.cpp
+    satcat_record.cpp
+    poller_base.cpp
+    satcat_poller.cpp
+    gp_poller.cpp
 )
 
 # The rest of the project stays on the C++20 baseline; this target opts into

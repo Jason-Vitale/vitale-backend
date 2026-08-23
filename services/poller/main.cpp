@@ -1,14 +1,29 @@
+#include <chrono>
 #include <cstdlib>
 #include <iostream>
+#include <optional>
+#include <string>
+#include <thread>
 #include <vector>
 
 #include "db_connection.hpp"
-#include "db_writer.hpp"
-#include "gp_record.hpp"
-#include "rule_registry.hpp"
+#include "gp_poller.hpp"
+#include "satcat_poller.hpp"
 #include "space_track_client.hpp"
 
-int main() {
+using namespace std::chrono_literals;
+
+namespace {
+
+// Poll cadence per ingestion source: gp is rate-limited by Space-Track to
+// 1 request/hour; satcat has no documented hard limit, but daily is more
+// than sufficient for catalog bookkeeping.
+constexpr auto kGpInterval = std::chrono::hours(1);
+constexpr auto kSatcatInterval = std::chrono::hours(24);
+
+} // namespace
+
+int main(int argc, char** argv) {
     const char* identity = std::getenv("SPACETRACK_IDENTITY");
     const char* password = std::getenv("SPACETRACK_PASSWORD");
     if (identity == nullptr || password == nullptr) {
@@ -16,69 +31,53 @@ int main() {
         return 1;
     }
 
-    vitale::poller::SpaceTrackClient client(identity, password);
+    // Stubbed target list for GpPoller -- see gp_poller.hpp. Which objects
+    // get actively GP-polled (vs merely catalogued via SatcatPoller) is an
+    // open product decision; this is a placeholder, not the final answer.
+    const std::vector<std::int64_t> gp_targets = {25544};
 
-    if (auto result = client.login(); !result) {
-        std::cerr << "login failed: " << result.error() << '\n';
-        return 1;
-    }
-    std::cout << "login succeeded\n";
-
-    // ISS (25544) as a single-object smoke test.
-    const std::vector<std::int64_t> test_norad_ids = {25544};
-
-    auto gp_response = client.fetch_gp(test_norad_ids);
-    if (!gp_response) {
-        std::cerr << "fetch_gp failed: " << gp_response.error() << '\n';
-        return 1;
-    }
-    std::cout << "fetched " << gp_response->size() << " bytes of GP data\n";
-
-    std::vector<vitale::poller::GpRecord> records;
-    try {
-        records = vitale::poller::parse_gp_response(*gp_response);
-    } catch (const std::exception& e) {
-        std::cerr << "failed to parse GP response: " << e.what() << '\n';
-        return 1;
-    }
-    std::cout << "parsed " << records.size() << " GP record(s)\n";
+    const bool run_once = argc > 1 && std::string(argv[1]) == "--once";
 
     try {
+        vitale::poller::SpaceTrackClient client(identity, password);
         auto conn = vitale::shared::make_connection();
-        vitale::poller::DbWriter writer(conn);
-        const rule_engine::RuleRegistry registry = rule_engine::make_default_rule_registry();
 
-        for (const auto& record : records) {
-            // Must run before upsert_object(): the returned snapshot's
-            // decay_date reflects the object's pre-upsert state, which is
-            // what makes it a valid "prev" to compare the freshly fetched
-            // "curr" snapshot against.
-            const auto prev = writer.get_last_snapshot(record.object.norad_cat_id);
+        vitale::poller::SatcatPoller satcat_poller(client, conn);
+        vitale::poller::GpPoller gp_poller(client, conn, gp_targets);
 
-            writer.upsert_object(record.object);
+        // Both pollers use the same SpaceTrackClient (one shared session)
+        // and the same connection; scheduling which runs when lives here
+        // rather than inside either poller. nullopt means "never run yet,
+        // due immediately" -- steady_clock::time_point::min() looks like it
+        // would express the same thing, but `now - time_point::min()`
+        // overflows the duration's representable range and silently
+        // corrupts the >= comparison, so don't use that trick.
+        std::optional<std::chrono::steady_clock::time_point> last_gp_run;
+        std::optional<std::chrono::steady_clock::time_point> last_satcat_run;
 
-            if (prev && prev->gp_id == record.snapshot.gp_id) {
-                std::cout << "norad " << record.object.norad_cat_id
-                          << ": gp_id unchanged, skipping (dedup)\n";
-                continue;
+        for (;;) {
+            const auto now = std::chrono::steady_clock::now();
+
+            if (!last_satcat_run || now - *last_satcat_run >= kSatcatInterval) {
+                std::cout << "[scheduler] running SatcatPoller\n";
+                satcat_poller.run();
+                last_satcat_run = now;
             }
 
-            const std::int64_t new_snapshot_id = writer.insert_snapshot(record.snapshot);
-            std::cout << "norad " << record.object.norad_cat_id
-                      << ": inserted snapshot id=" << new_snapshot_id << '\n';
-
-            if (prev) {
-                const auto events = registry.evaluate_all(*prev, record.snapshot);
-                for (const auto& event : events) {
-                    writer.insert_event(record.object.norad_cat_id, event, prev->id, new_snapshot_id);
-                    std::cout << "  -> fired event: " << event.event_type_code << '\n';
-                }
-            } else {
-                std::cout << "  (first observation of this object, no rules evaluated)\n";
+            if (!last_gp_run || now - *last_gp_run >= kGpInterval) {
+                std::cout << "[scheduler] running GpPoller\n";
+                gp_poller.run();
+                last_gp_run = now;
             }
+
+            if (run_once) {
+                break;
+            }
+
+            std::this_thread::sleep_for(1min);
         }
     } catch (const std::exception& e) {
-        std::cerr << "database write failed: " << e.what() << '\n';
+        std::cerr << "poller: fatal error: " << e.what() << '\n';
         return 1;
     }
 

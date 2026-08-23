@@ -43,9 +43,12 @@ SpaceTrackClient::~SpaceTrackClient() {
     }
 }
 
-std::expected<std::string, std::string> SpaceTrackClient::perform_get(const std::string& url) {
+std::expected<std::string, std::string> SpaceTrackClient::get(const std::string& url) {
     if (curl_ == nullptr) {
         return std::unexpected("curl handle failed to initialize");
+    }
+    if (!logged_in_) {
+        return std::unexpected("get() called before a successful login()");
     }
 
     std::string response_body;
@@ -123,32 +126,6 @@ std::expected<void, std::string> SpaceTrackClient::login() {
 
     logged_in_ = true;
     return {};
-}
-
-std::expected<std::string, std::string> SpaceTrackClient::fetch_gp(
-    const std::vector<std::int64_t>& norad_cat_ids) {
-    if (!logged_in_) {
-        return std::unexpected("fetch_gp called before a successful login()");
-    }
-    if (norad_cat_ids.empty()) {
-        return std::unexpected("fetch_gp requires at least one NORAD catalog ID");
-    }
-
-    std::ostringstream ids;
-    for (std::size_t i = 0; i < norad_cat_ids.size(); ++i) {
-        if (i > 0) {
-            ids << ',';
-        }
-        ids << norad_cat_ids[i];
-    }
-
-    // Batches every requested ID into one query and restricts to live,
-    // propagable objects, per Space-Track's recommended GP query filter.
-    std::ostringstream url;
-    url << kBaseUrl << "/basicspacedata/query/class/gp/NORAD_CAT_ID/" << ids.str()
-        << "/decay_date/null-val/epoch/%3Enow-10/orderby/NORAD_CAT_ID/format/json";
-
-    return perform_get(url.str());
 }
 
 } // namespace vitale::poller

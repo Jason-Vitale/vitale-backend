@@ -4,23 +4,17 @@ namespace vitale::poller {
 
 DbWriter::DbWriter(pqxx::connection& conn) : conn_(conn) {}
 
-void DbWriter::upsert_object(const ObjectRecord& obj) {
+void DbWriter::upsert_object_from_satcat(const ObjectRecord& obj) {
     pqxx::work txn(conn_);
     txn.exec(
         "INSERT INTO objects "
-        "(norad_cat_id, object_name, object_id, object_type, country_code, launch_date, site, rcs_size, decay_date, updated_at) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now()) "
+        "(norad_cat_id, object_name, object_type, country_code, launch_date, site, rcs_size, decay_date, updated_at) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now()) "
         "ON CONFLICT (norad_cat_id) DO UPDATE SET "
         "object_name = EXCLUDED.object_name, "
-        "object_id = EXCLUDED.object_id, "
-        "object_type = EXCLUDED.object_type, "
-        "country_code = EXCLUDED.country_code, "
-        "launch_date = EXCLUDED.launch_date, "
-        "site = EXCLUDED.site, "
-        "rcs_size = EXCLUDED.rcs_size, "
         "decay_date = EXCLUDED.decay_date, "
         "updated_at = now()",
-        pqxx::params{obj.norad_cat_id, obj.object_name, obj.object_id, obj.object_type, obj.country_code,
+        pqxx::params{obj.norad_cat_id, obj.object_name, obj.object_type, obj.country_code,
                      obj.launch_date, obj.site, obj.rcs_size, obj.decay_date});
     txn.commit();
 }
