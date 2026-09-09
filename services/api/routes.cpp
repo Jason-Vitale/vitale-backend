@@ -431,9 +431,18 @@ void register_routes(ApiApp& app) {
             auto conn = vitale::shared::make_connection();
             pqxx::work txn(conn);
             const pqxx::result rows = txn.exec("SELECT count(*) FROM objects");
+            // Distinct objects with at least one GP snapshot ever recorded --
+            // i.e. how far GpPoller's rotation (see services/poller/
+            // db_writer.cpp's next_gp_rotation_batch) has actually reached
+            // into the catalog, not how many objects have a detected event.
+            // Uses idx_snapshots_norad_epoch (leading column norad_cat_id),
+            // so this stays cheap as the table grows.
+            const pqxx::result snapshot_rows =
+                txn.exec("SELECT count(DISTINCT norad_cat_id) FROM snapshots");
 
             crow::json::wvalue response;
             response["tracked_objects"] = rows[0][0].as<std::int64_t>();
+            response["objects_with_snapshot"] = snapshot_rows[0][0].as<std::int64_t>();
             return crow::response(response);
         } catch (const std::exception& e) {
             crow::json::wvalue error;
