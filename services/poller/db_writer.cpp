@@ -172,4 +172,59 @@ void DbWriter::mark_poller_run(const std::string& poller_name) {
     txn.commit();
 }
 
+std::vector<std::int64_t> DbWriter::next_gp_rotation_batch(int batch_size) {
+    pqxx::work txn(conn_);
+
+    const pqxx::result cursor_rows =
+        txn.exec("SELECT rotation_cursor FROM poller_state WHERE poller_name = 'gp'");
+    // -1 sentinel for "no cursor yet" rather than threading a NULL through
+    // the query below -- norad_cat_id is always a positive catalog number,
+    // so "> -1" is equivalent to "no lower bound" without needing COALESCE.
+    const std::int64_t cursor = (!cursor_rows.empty() && !cursor_rows[0][0].is_null())
+                                     ? cursor_rows[0][0].as<std::int64_t>()
+                                     : -1;
+
+    std::vector<std::int64_t> batch;
+
+    const pqxx::result primary_rows = txn.exec(
+        "SELECT norad_cat_id FROM objects WHERE decay_date IS NULL AND norad_cat_id > $1 "
+        "ORDER BY norad_cat_id LIMIT $2",
+        pqxx::params{cursor, batch_size});
+    for (const auto& row : primary_rows) {
+        batch.push_back(row[0].as<std::int64_t>());
+    }
+
+    // Reached the end of the catalog before filling the batch -- wrap
+    // around to the beginning so the rotation is a continuous cycle rather
+    // than stalling once the cursor passes the last object.
+    if (static_cast<int>(batch.size()) < batch_size) {
+        const int remaining = batch_size - static_cast<int>(batch.size());
+        const pqxx::result wrap_rows = txn.exec(
+            "SELECT norad_cat_id FROM objects WHERE decay_date IS NULL "
+            "ORDER BY norad_cat_id LIMIT $1",
+            pqxx::params{remaining});
+        for (const auto& row : wrap_rows) {
+            batch.push_back(row[0].as<std::int64_t>());
+        }
+    }
+
+    txn.commit();
+    return batch;
+}
+
+void DbWriter::advance_gp_rotation_cursor(std::int64_t new_cursor) {
+    pqxx::work txn(conn_);
+    // last_run_at's value here only matters the very first time this runs
+    // before mark_poller_run("gp") has ever inserted a row (NOT NULL
+    // column) -- mark_poller_run() is the sole owner of keeping it current
+    // on every subsequent call, so it's deliberately left out of the
+    // ON CONFLICT clause here.
+    txn.exec(
+        "INSERT INTO poller_state (poller_name, last_run_at, rotation_cursor) "
+        "VALUES ('gp', now(), $1) "
+        "ON CONFLICT (poller_name) DO UPDATE SET rotation_cursor = $1",
+        pqxx::params{new_cursor});
+    txn.commit();
+}
+
 } // namespace vitale::poller

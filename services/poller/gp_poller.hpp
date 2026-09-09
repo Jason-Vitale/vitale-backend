@@ -18,11 +18,13 @@ namespace vitale::poller {
 // exists (FK on snapshots.norad_cat_id).
 class GpPoller : public Poller {
 public:
-    // target_norad_ids is deliberately injected rather than derived from
-    // "all objects": which subset of the catalog gets actively GP-polled
-    // (vs merely known via SatcatPoller) is an open product decision.
-    // Callers own the list; swap it for a real watchlist query once that's
-    // settled -- for now this is a stub, not the final answer.
+    // target_norad_ids is one rotation batch of DbWriter::
+    // next_gp_rotation_batch() (see main.cpp), not a fixed watchlist --
+    // GP-polls the whole `objects` catalog over successive runs rather
+    // than a hand-picked subset. Callers own fetching the batch and
+    // constructing a fresh GpPoller with it each run; on a successful
+    // batch, process_response() advances the rotation cursor to this
+    // batch's last (highest) id.
     GpPoller(SpaceTrackClient& client, pqxx::connection& conn, std::vector<std::int64_t> target_norad_ids);
 
 protected:

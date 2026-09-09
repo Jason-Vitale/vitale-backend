@@ -99,6 +99,28 @@ public:
     // prevent.
     void mark_poller_run(const std::string& poller_name);
 
+    // Returns the next `batch_size` NORAD IDs for GpPoller's rotating sweep
+    // through the full `objects` catalog, continuing from wherever the last
+    // successfully-processed batch left off (poller_state.rotation_cursor
+    // for poller_name = 'gp'; NULL means start from the beginning).
+    // Excludes already-decayed objects (decay_date IS NULL) -- polling GP
+    // data for something that no longer orbits can't return anything
+    // useful. Wraps around to the start of the catalog if fewer than
+    // batch_size objects remain past the cursor, so this is a continuous
+    // cycle rather than something that stops at the end of the table.
+    //
+    // Read-only: does not itself advance the cursor. Call
+    // advance_gp_rotation_cursor() only after the batch this returns has
+    // actually been successfully processed, so a failed request doesn't
+    // silently skip a chunk of the catalog forever.
+    std::vector<std::int64_t> next_gp_rotation_batch(int batch_size);
+
+    // Persists `new_cursor` (the highest norad_cat_id covered by the batch
+    // just processed, in rotation order -- i.e. the last element of what
+    // next_gp_rotation_batch() returned) as the rotation's starting point
+    // for next time.
+    void advance_gp_rotation_cursor(std::int64_t new_cursor);
+
 private:
     pqxx::connection& conn_;
 };

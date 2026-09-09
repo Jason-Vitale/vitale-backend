@@ -1,7 +1,6 @@
 #include <cstdlib>
 #include <ctime>
 #include <iostream>
-#include <sstream>
 #include <vector>
 
 #include "db_connection.hpp"
@@ -19,6 +18,14 @@ namespace {
 // catalog bookkeeping.
 constexpr const char* kGpInterval = "1 hour";
 constexpr const char* kSatcatInterval = "24 hours";
+
+// GpPoller rotates through the whole `objects` catalog (~35k rows) rather
+// than a fixed watchlist, 500 at a time per hourly request (see
+// DbWriter::next_gp_rotation_batch). 500 isn't confirmed against
+// Space-Track's own undocumented ceiling -- support hasn't answered on
+// it -- but matches the empirically-found reliable batch size other
+// Space-Track consumers (e.g. IBM's spacetech-ssa) have published.
+constexpr int kGpRotationBatchSize = 500;
 
 // Wall-clock timestamp in US Eastern time (EST/EDT, DST-aware), for log
 // lines that mark when a run happened. Uses the classic POSIX
@@ -76,54 +83,12 @@ int main() {
         return 1;
     }
 
-    // TEMPORARY, pending two open items: (1) which objects get actively
-    // GP-polled vs merely catalogued via SatcatPoller is still an
-    // unsettled product decision (see gp_poller.hpp), and (2) we have not
-    // empirically confirmed a maximum comma-delimited NORAD_CAT_ID batch
-    // size for the gp class -- Space-Track's docs don't state one. Capped
-    // to a small, hand-picked, verified-real set of well-known active
-    // objects (looked up directly against our own objects table, not
-    // guessed) rather than deriving from the full ~35k-row catalog, so an
-    // hourly cron-driven GpPoller run can't hit an unknown batch-size or
-    // URL-length limit against the live account. Revisit both before
-    // expanding this list.
-    const std::vector<std::int64_t> gp_targets = {
-        25544,  // ISS (ZARYA)
-        20580,  // HST (Hubble Space Telescope)
-        25994,  // TERRA
-        31698,  // TERRA SAR X
-        37218,  // SKYTERRA 1
-        43013,  // NOAA 20
-        43491,  // FENGYUN 2H
-        49260,  // LANDSAT 9
-        66514,  // SENTINEL-6B
-        44714,  // STARLINK-1008
-        44718,  // STARLINK-1012
-        44723,  // STARLINK-1017
-    };
-
-    // Printed every invocation, independent of whether GpPoller is actually
-    // due this hour -- so "which objects is this even configured to poll"
-    // is answerable from the log even on a cycle that skips it entirely.
-    {
-        std::ostringstream ids;
-        for (std::size_t i = 0; i < gp_targets.size(); ++i) {
-            if (i > 0) {
-                ids << ", ";
-            }
-            ids << gp_targets[i];
-        }
-        std::cout << "[scheduler] GpPoller configured with " << gp_targets.size()
-                  << " target norad id(s): " << ids.str() << '\n';
-    }
-
     try {
         vitale::poller::SpaceTrackClient client(identity, password);
         auto conn = vitale::shared::make_connection();
         vitale::poller::DbWriter scheduler_state(conn);
 
         vitale::poller::SatcatPoller satcat_poller(client, conn);
-        vitale::poller::GpPoller gp_poller(client, conn, gp_targets);
 
         if (scheduler_state.is_poller_due("satcat", kSatcatInterval)) {
             std::cout << "[scheduler] running SatcatPoller\n";
@@ -134,6 +99,19 @@ int main() {
         }
 
         if (scheduler_state.is_poller_due("gp", kGpInterval)) {
+            // Fetched fresh each run, not at process startup: the batch is
+            // this run's slice of the ongoing rotation, computed from
+            // wherever the last successful run's cursor left off.
+            const std::vector<std::int64_t> gp_targets =
+                scheduler_state.next_gp_rotation_batch(kGpRotationBatchSize);
+
+            std::cout << "[scheduler] GpPoller rotation batch: " << gp_targets.size() << " object(s)";
+            if (!gp_targets.empty()) {
+                std::cout << " spanning norad_cat_id " << gp_targets.front() << ".." << gp_targets.back();
+            }
+            std::cout << '\n';
+
+            vitale::poller::GpPoller gp_poller(client, conn, gp_targets);
             std::cout << "[scheduler] running GpPoller at " << now_in_eastern_time() << '\n';
             gp_poller.run();
             scheduler_state.mark_poller_run("gp");
