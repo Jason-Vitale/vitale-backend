@@ -88,6 +88,17 @@ public:
     // rather than by parsing a timestamp back into C++, since that's what
     // Postgres is actually good at and it sidesteps any cross-platform
     // chrono-parsing portability questions.
+    //
+    // Applies a small fixed tolerance (5 minutes) below `pg_interval` internally (see
+    // .cpp) so that ordinary per-run overhead -- the DB round trips for
+    // this check and mark_poller_run() itself, which land last_run_at some
+    // tens to hundreds of ms after cron actually fired -- can't push a
+    // legitimately-due poller just past the threshold. Without it, an
+    // hourly poller reliably fires every OTHER hour instead of every hour:
+    // each run's last_run_at drifts slightly later (in wall-clock terms)
+    // than the previous one, so the very next hourly check always misses
+    // by that same small margin, then the one after that is two hours
+    // overdue and clears it easily -- observed in production.
     bool is_poller_due(const std::string& poller_name, const std::string& pg_interval);
 
     // Records that `poller_name` just ran, right now. Call this

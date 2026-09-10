@@ -152,8 +152,15 @@ void DbWriter::insert_event(
 
 bool DbWriter::is_poller_due(const std::string& poller_name, const std::string& pg_interval) {
     pqxx::work txn(conn_);
+    // The '5 minutes' tolerance absorbs the DB round-trip time between when
+    // cron actually fires and when last_run_at gets stamped (see header
+    // comment) -- comfortably larger than the sub-second jitter observed in
+    // practice (leaving headroom for an occasional slow connection/network
+    // blip too), while staying tiny relative to either poller's real
+    // interval (1 hour or 24 hours), so it can't cause a poller to double-
+    // fire within the same run.
     const pqxx::result rows = txn.exec(
-        "SELECT (last_run_at <= now() - $2::interval) FROM poller_state WHERE poller_name = $1",
+        "SELECT (last_run_at <= now() - $2::interval + interval '5 minutes') FROM poller_state WHERE poller_name = $1",
         pqxx::params{poller_name, pg_interval});
     txn.commit();
 
