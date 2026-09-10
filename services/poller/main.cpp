@@ -91,14 +91,30 @@ int main() {
         vitale::poller::SatcatPoller satcat_poller(client, conn);
 
         if (scheduler_state.is_poller_due("satcat", kSatcatInterval)) {
+            // Marked due *before* doing any work, not after run() returns --
+            // see the identical comment on the gp branch below for why.
+            scheduler_state.mark_poller_run("satcat");
             std::cout << "[scheduler] running SatcatPoller\n";
             satcat_poller.run();
-            scheduler_state.mark_poller_run("satcat");
         } else {
             std::cout << "[scheduler] SatcatPoller not due yet\n";
         }
 
         if (scheduler_state.is_poller_due("gp", kGpInterval)) {
+            // Marked due *before* doing any work: is_poller_due() compares
+            // against wall-clock "now" (last_run_at <= now() - interval), so
+            // if last_run_at instead reflected when the run *finished*,
+            // every hour actually spent processing a batch (tens of seconds
+            // for 500 objects) would push the next hourly check's "now() -
+            // last_run_at" just under the 1-hour threshold -- causing GP to
+            // fire every OTHER hour forever instead of every hour, which is
+            // exactly what was observed in production. Marking it here also
+            // means a throw from next_gp_rotation_batch() or GpPoller's
+            // constructor below still gets recorded, rather than leaving a
+            // persistent failure free to retry on every single cron tick
+            // (see the rationale on mark_poller_run's declaration).
+            scheduler_state.mark_poller_run("gp");
+
             // Fetched fresh each run, not at process startup: the batch is
             // this run's slice of the ongoing rotation, computed from
             // wherever the last successful run's cursor left off.
@@ -114,7 +130,6 @@ int main() {
             vitale::poller::GpPoller gp_poller(client, conn, gp_targets);
             std::cout << "[scheduler] running GpPoller at " << now_in_eastern_time() << '\n';
             gp_poller.run();
-            scheduler_state.mark_poller_run("gp");
         } else {
             std::cout << "[scheduler] GpPoller not due yet (checked at " << now_in_eastern_time() << ")\n";
         }
