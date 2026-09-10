@@ -1,6 +1,9 @@
+#include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <ctime>
 #include <iostream>
+#include <streambuf>
 #include <vector>
 
 #include "db_connection.hpp"
@@ -27,33 +30,73 @@ constexpr const char* kSatcatInterval = "24 hours";
 // Space-Track consumers (e.g. IBM's spacetech-ssa) have published.
 constexpr int kGpRotationBatchSize = 500;
 
-// Wall-clock timestamp in US Eastern time (EST/EDT, DST-aware), for log
-// lines that mark when a run happened. Uses the classic POSIX
-// TZ-env-var + localtime_r() approach rather than std::chrono's
-// <chrono> timezone support (std::chrono::locate_zone etc.): the latter is
-// still incomplete in libc++ as shipped with Apple Clang, which local macOS
-// dev builds use, while TZ + tzset() is portable across both that and the
-// Linux (EC2) deploy target this actually runs on.
+// Wall-clock timestamp in US Eastern time (EST/EDT, DST-aware), down to the
+// millisecond, for log lines that mark when a run happened. Uses the
+// classic POSIX TZ-env-var + localtime_r() approach rather than
+// std::chrono's <chrono> timezone support (std::chrono::locate_zone etc.):
+// the latter is still incomplete in libc++ as shipped with Apple Clang,
+// which local macOS dev builds use, while TZ + tzset() is portable across
+// both that and the Linux (EC2) deploy target this actually runs on.
+// localtime_r() itself only has second resolution, so the millisecond
+// component is pulled separately from system_clock and appended by hand.
 std::string now_in_eastern_time() {
     setenv("TZ", "America/New_York", 1);
     tzset();
 
-    const std::time_t now = std::time(nullptr);
-    std::tm local_tm{};
-    localtime_r(&now, &local_tm);
+    const auto now = std::chrono::system_clock::now();
+    const std::time_t now_time_t = std::chrono::system_clock::to_time_t(now);
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) %
+                    std::chrono::seconds(1);
 
-    char buf[32];
-    std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S %Z", &local_tm);
-    return std::string(buf);
+    std::tm local_tm{};
+    localtime_r(&now_time_t, &local_tm);
+
+    char date_buf[24];
+    std::strftime(date_buf, sizeof(date_buf), "%Y-%m-%d %H:%M:%S", &local_tm);
+    char tz_buf[8];
+    std::strftime(tz_buf, sizeof(tz_buf), "%Z", &local_tm);
+
+    char full_buf[48];
+    std::snprintf(full_buf, sizeof(full_buf), "%s.%03lld %s", date_buf, static_cast<long long>(ms.count()), tz_buf);
+    return std::string(full_buf);
 }
 
 // Bounds each cron invocation's output in poller.log so individual runs are
 // easy to pick out visually when scrolling/grepping a log that accumulates
 // many runs over time -- printed regardless of whether the run did any real
-// polling work or just hit due-checks.
+// polling work or just hit due-checks. No embedded timestamp of its own --
+// TimestampedStreambuf below already prefixes every line with one.
 void print_run_separator() {
-    std::cout << "================== " << now_in_eastern_time() << " ==================\n";
+    std::cout << "==================\n";
 }
+
+// Wraps another streambuf (std::cout's or std::cerr's real one) so every
+// line gets a "[<timestamp>] - " prefix automatically -- added so every log
+// line, including ones from poller_base.cpp, is timestamped without every
+// individual log call site needing to remember to print its own.
+class TimestampedStreambuf : public std::streambuf {
+public:
+    explicit TimestampedStreambuf(std::streambuf* dest) : dest_(dest) {}
+
+protected:
+    int overflow(int ch) override {
+        if (ch == traits_type::eof()) {
+            return ch;
+        }
+        if (at_line_start_) {
+            const std::string prefix = "[" + now_in_eastern_time() + "] - ";
+            dest_->sputn(prefix.data(), static_cast<std::streamsize>(prefix.size()));
+        }
+        at_line_start_ = (ch == '\n');
+        return dest_->sputc(static_cast<char>(ch));
+    }
+
+    int sync() override { return dest_->pubsync(); }
+
+private:
+    std::streambuf* dest_;
+    bool at_line_start_ = true;
+};
 
 } // namespace
 
@@ -63,6 +106,16 @@ void print_run_separator() {
 // not from an in-memory "last run" variable that would reset every time
 // cron starts a new process.
 int main() {
+    // Installed before anything else logs a single line, so every line for
+    // the rest of the process's life -- including the opening separator
+    // right below -- gets a timestamp prefix automatically. These live for
+    // main()'s whole lifetime (including past quick_exit(), same as every
+    // other object here -- see the comment on quick_exit() below).
+    TimestampedStreambuf cout_buf(std::cout.rdbuf());
+    std::cout.rdbuf(&cout_buf);
+    TimestampedStreambuf cerr_buf(std::cerr.rdbuf());
+    std::cerr.rdbuf(&cerr_buf);
+
     // Defensive, independent of any particular crash's root cause: stdout
     // is normally fully buffered when redirected to a file/log (as cron
     // does), so a hard abort (SIGABRT, segfault, ...) loses whatever hadn't
@@ -128,10 +181,10 @@ int main() {
             std::cout << '\n';
 
             vitale::poller::GpPoller gp_poller(client, conn, gp_targets);
-            std::cout << "[scheduler] running GpPoller at " << now_in_eastern_time() << '\n';
+            std::cout << "[scheduler] running GpPoller\n";
             gp_poller.run();
         } else {
-            std::cout << "[scheduler] GpPoller not due yet (checked at " << now_in_eastern_time() << ")\n";
+            std::cout << "[scheduler] GpPoller not due yet\n";
         }
     } catch (const std::exception& e) {
         std::cerr << "poller: fatal error: " << e.what() << '\n';

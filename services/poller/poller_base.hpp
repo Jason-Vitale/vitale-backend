@@ -38,6 +38,14 @@ protected:
     // is still unambiguous about which poller produced which line.
     virtual std::string poller_name() const = 0;
 
+    // Short human description of what a request is asking for (e.g. "500
+    // object(s)"), logged by run() in place of the full query URL --
+    // GpPoller's URL alone can run to thousands of characters (one
+    // NORAD_CAT_ID per target), which drowns out the rest of a run in
+    // poller.log without adding any information beyond what's already
+    // implied by the target count.
+    virtual std::string request_description() const = 0;
+
     SpaceTrackClient& client_;
 };
 

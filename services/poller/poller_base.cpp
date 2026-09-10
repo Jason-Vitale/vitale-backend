@@ -18,7 +18,7 @@ void Poller::run() {
     }
 
     const std::string url = build_query_url();
-    std::cout << name << " poller: querying " << url << '\n';
+    std::cout << name << " poller: sending request for " << request_description() << '\n';
 
     auto response = client_.get(url);
     if (!response) {

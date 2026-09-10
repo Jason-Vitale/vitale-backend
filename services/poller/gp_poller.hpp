@@ -31,6 +31,9 @@ protected:
     std::string build_query_url() const override;
     void process_response(const std::string& json_body) override;
     std::string poller_name() const override { return "gp"; }
+    std::string request_description() const override {
+        return std::to_string(target_norad_ids_.size()) + " object(s)";
+    }
 
 private:
     DbWriter writer_;
