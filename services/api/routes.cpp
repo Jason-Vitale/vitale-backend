@@ -19,8 +19,10 @@ constexpr const char* kObjectColumns =
     "norad_cat_id, object_name, object_id, object_type, country_code, "
     "launch_date, site, rcs_size, decay_date, hit_count";
 
-constexpr int kDefaultPopularLimit = 10;
-constexpr int kMaxPopularLimit = 100;
+// Shared by /objects/popular and /objects/top-events -- both are "top N by
+// some ranking column" queries with the same reasonable default/cap.
+constexpr int kDefaultTopNLimit = 10;
+constexpr int kMaxTopNLimit = 100;
 
 // /objects/catalog intentionally omits site/rcs_size (detail-page-only
 // fields, see routes.hpp) to keep the full-catalog payload smaller.
@@ -273,7 +275,7 @@ void register_routes(ApiApp& app) {
 
     CROW_ROUTE(app, "/objects/popular")
     ([](const crow::request& req) {
-        int limit = kDefaultPopularLimit;
+        int limit = kDefaultTopNLimit;
         if (const char* limit_param = req.url_params.get("limit"); limit_param != nullptr) {
             limit = std::atoi(limit_param);
             if (limit <= 0) {
@@ -281,7 +283,7 @@ void register_routes(ApiApp& app) {
                 error["error"] = "'limit' must be a positive integer";
                 return crow::response(400, error);
             }
-            limit = std::min(limit, kMaxPopularLimit);
+            limit = std::min(limit, kMaxTopNLimit);
         }
 
         try {
@@ -303,6 +305,56 @@ void register_routes(ApiApp& app) {
             crow::json::wvalue::list objects;
             for (const auto& row : rows) {
                 objects.push_back(object_row_to_json(row));
+            }
+            crow::json::wvalue response;
+            response["objects"] = std::move(objects);
+            return crow::response(response);
+        } catch (const std::exception& e) {
+            crow::json::wvalue error;
+            error["error"] = e.what();
+            return crow::response(500, error);
+        }
+    });
+
+    // Registered before /objects/<int> for the same reason as /search and
+    // /popular above.
+    CROW_ROUTE(app, "/objects/top-events")
+    ([](const crow::request& req) {
+        int limit = kDefaultTopNLimit;
+        if (const char* limit_param = req.url_params.get("limit"); limit_param != nullptr) {
+            limit = std::atoi(limit_param);
+            if (limit <= 0) {
+                crow::json::wvalue error;
+                error["error"] = "'limit' must be a positive integer";
+                return crow::response(400, error);
+            }
+            limit = std::min(limit, kMaxTopNLimit);
+        }
+
+        try {
+            auto conn = vitale::shared::make_connection();
+            pqxx::work txn(conn);
+            // INNER JOIN, not LEFT -- an object with zero audt_events isn't
+            // "top" by any ranking, so there's no need for a HAVING clause
+            // to filter zero-count rows back out. GROUP BY o.norad_cat_id
+            // alone is enough to select the rest of o's columns too, since
+            // norad_cat_id is objects' primary key (functional dependency).
+            const pqxx::result rows = txn.exec(
+                "SELECT o.norad_cat_id, o.object_name, o.object_id, o.object_type, o.country_code, "
+                "       o.launch_date, o.site, o.rcs_size, o.decay_date, o.hit_count, "
+                "       COUNT(e.id) AS event_count "
+                "FROM objects o "
+                "JOIN audt_events e ON e.norad_cat_id = o.norad_cat_id "
+                "GROUP BY o.norad_cat_id "
+                "ORDER BY event_count DESC, o.norad_cat_id ASC "
+                "LIMIT $1",
+                pqxx::params{limit});
+
+            crow::json::wvalue::list objects;
+            for (const auto& row : rows) {
+                auto obj = object_row_to_json(row);
+                obj["event_count"] = row["event_count"].as<std::int64_t>();
+                objects.push_back(std::move(obj));
             }
             crow::json::wvalue response;
             response["objects"] = std::move(objects);
