@@ -168,6 +168,38 @@ crow::json::wvalue event_row_to_json(const Row& row) {
     return event;
 }
 
+// Mirrors DbWriter::get_last_snapshot's column list/types (services/poller/
+// db_writer.cpp) -- same table, same "never actually null in practice"
+// assumption (every column here is populated on every insert_snapshot()
+// call), so no is_null guards on the numeric fields, matching that code.
+template <typename Row>
+crow::json::wvalue snapshot_row_to_json(const Row& row) {
+    crow::json::wvalue snap;
+    snap["id"] = row["id"].template as<std::int64_t>();
+    snap["gp_id"] = row["gp_id"].template as<std::int64_t>();
+    snap["epoch"] = row["epoch"].template as<std::string>();
+    snap["fetched_at"] = row["fetched_at"].template as<std::string>();
+    snap["mean_motion"] = row["mean_motion"].template as<double>();
+    snap["eccentricity"] = row["eccentricity"].template as<double>();
+    snap["inclination"] = row["inclination"].template as<double>();
+    snap["ra_of_asc_node"] = row["ra_of_asc_node"].template as<double>();
+    snap["arg_of_pericenter"] = row["arg_of_pericenter"].template as<double>();
+    snap["mean_anomaly"] = row["mean_anomaly"].template as<double>();
+    snap["semimajor_axis"] = row["semimajor_axis"].template as<double>();
+    snap["period"] = row["period"].template as<double>();
+    snap["apoapsis"] = row["apoapsis"].template as<double>();
+    snap["periapsis"] = row["periapsis"].template as<double>();
+    snap["bstar"] = row["bstar"].template as<double>();
+    snap["mean_motion_dot"] = row["mean_motion_dot"].template as<double>();
+    snap["mean_motion_ddot"] = row["mean_motion_ddot"].template as<double>();
+    snap["element_set_no"] = row["element_set_no"].template as<int>();
+    snap["rev_at_epoch"] = row["rev_at_epoch"].template as<int>();
+    snap["tle_line0"] = row["tle_line0"].template as<std::string>();
+    snap["tle_line1"] = row["tle_line1"].template as<std::string>();
+    snap["tle_line2"] = row["tle_line2"].template as<std::string>();
+    return snap;
+}
+
 // Shared by /objects/<int>/events and /objects/<int>/audt -- same data,
 // two route names (the frontend spec uses /audt; /events stays too since
 // it's already confirmed working against the deployed instance).
@@ -468,6 +500,53 @@ void register_routes(ApiApp& app) {
             }
 
             auto json = object_row_to_json(rows[0]);
+            txn.commit();
+            return crow::response(json);
+        } catch (const std::exception& e) {
+            crow::json::wvalue error;
+            error["error"] = e.what();
+            return crow::response(500, error);
+        }
+    });
+
+    // Latest orbital-element snapshot for one object -- the current
+    // scientific data (mean motion, eccentricity, inclination, drag term,
+    // raw TLE lines, etc.) an object detail page needs, as opposed to
+    // /objects/<int>/events' history of detected changes. Not every object
+    // has one yet: GpPoller's rotation hasn't necessarily reached it (see
+    // GET /stats' objects_with_snapshot), or -- for a small, mostly
+    // permanent set of objects like classified USA satellites or ones in
+    // orbits Space-Track's TLE-based `gp` class doesn't track well (e.g.
+    // JWST/Herschel at Sun-Earth L2) -- it may never get one at all.
+    CROW_ROUTE(app, "/objects/<int>/snapshot")
+    ([](int norad_cat_id) {
+        try {
+            auto conn = vitale::shared::make_connection();
+            pqxx::work txn(conn);
+            const pqxx::result rows = txn.exec(
+                "SELECT id, gp_id, epoch, fetched_at, mean_motion, eccentricity, inclination, "
+                "       ra_of_asc_node, arg_of_pericenter, mean_anomaly, semimajor_axis, period, "
+                "       apoapsis, periapsis, bstar, mean_motion_dot, mean_motion_ddot, "
+                "       element_set_no, rev_at_epoch, tle_line0, tle_line1, tle_line2 "
+                "FROM snapshots WHERE norad_cat_id = $1 ORDER BY epoch DESC LIMIT 1",
+                pqxx::params{norad_cat_id});
+
+            if (rows.empty()) {
+                // Distinguishes "no such object" from "object exists but has
+                // no snapshot yet" so the frontend can render each case
+                // differently (e.g. a 404 page vs. "orbital data pending")
+                // rather than treating both as the same generic not-found.
+                const pqxx::result exists_rows =
+                    txn.exec("SELECT 1 FROM objects WHERE norad_cat_id = $1", pqxx::params{norad_cat_id});
+                txn.commit();
+                crow::json::wvalue error;
+                error["error"] =
+                    exists_rows.empty() ? "object not found" : "no snapshot data available for this object";
+                return crow::response(404, error);
+            }
+
+            auto json = snapshot_row_to_json(rows[0]);
+            json["norad_cat_id"] = norad_cat_id;
             txn.commit();
             return crow::response(json);
         } catch (const std::exception& e) {
