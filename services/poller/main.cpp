@@ -143,31 +143,42 @@ int main() {
 
         vitale::poller::SatcatPoller satcat_poller(client, conn);
 
-        if (scheduler_state.is_poller_due("satcat", kSatcatInterval)) {
-            // Marked due *before* doing any work, not after run() returns --
-            // see the identical comment on the gp branch below for why.
+        // Both due-checks are decided and stamped up front, before either
+        // poller does any real work, rather than interleaved with the
+        // satcat/gp run() calls below. satcat and gp run sequentially in
+        // this one process, so if gp's is_poller_due()/mark_poller_run()
+        // only happened after satcat_poller.run() returned, satcat's own
+        // runtime (minutes, when its 24-hour interval comes due and it
+        // diffs/upserts the full ~35k-object catalog) would delay gp's
+        // scheduling decision by that same amount -- large enough to blow
+        // through the 5-minute tolerance in is_poller_due() and reintroduce
+        // the every-other-hour skip that tolerance was added to fix, just
+        // via a different poller's runtime instead of gp's own. Deciding
+        // and stamping both here, back-to-back, keeps gp's last_run_at
+        // anchored to this tick's actual decision instant regardless of
+        // what satcat does afterward.
+        const bool satcat_due = scheduler_state.is_poller_due("satcat", kSatcatInterval);
+        const bool gp_due = scheduler_state.is_poller_due("gp", kGpInterval);
+        if (satcat_due) {
             scheduler_state.mark_poller_run("satcat");
+        }
+        if (gp_due) {
+            // Marking here, before next_gp_rotation_batch()/GpPoller's
+            // constructor below, also means a throw from either still gets
+            // recorded, rather than leaving a persistent failure free to
+            // retry on every single cron tick (see the rationale on
+            // mark_poller_run's declaration).
+            scheduler_state.mark_poller_run("gp");
+        }
+
+        if (satcat_due) {
             std::cout << "[scheduler] running SatcatPoller\n";
             satcat_poller.run();
         } else {
             std::cout << "[scheduler] SatcatPoller not due yet\n";
         }
 
-        if (scheduler_state.is_poller_due("gp", kGpInterval)) {
-            // Marked due *before* doing any work: is_poller_due() compares
-            // against wall-clock "now" (last_run_at <= now() - interval), so
-            // if last_run_at instead reflected when the run *finished*,
-            // every hour actually spent processing a batch (tens of seconds
-            // for 500 objects) would push the next hourly check's "now() -
-            // last_run_at" just under the 1-hour threshold -- causing GP to
-            // fire every OTHER hour forever instead of every hour, which is
-            // exactly what was observed in production. Marking it here also
-            // means a throw from next_gp_rotation_batch() or GpPoller's
-            // constructor below still gets recorded, rather than leaving a
-            // persistent failure free to retry on every single cron tick
-            // (see the rationale on mark_poller_run's declaration).
-            scheduler_state.mark_poller_run("gp");
-
+        if (gp_due) {
             // Fetched fresh each run, not at process startup: the batch is
             // this run's slice of the ongoing rotation, computed from
             // wherever the last successful run's cursor left off.
