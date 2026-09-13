@@ -1,6 +1,35 @@
 #include "db_writer.hpp"
 
+#include <sstream>
+
 namespace vitale::poller {
+
+namespace {
+// Builds " AND norad_cat_id NOT IN (id1,id2,...)", or "" if exclude_ids is
+// empty. Inlined as literals rather than bound via pqxx::params: the ids
+// come only from top_gp_hot_targets() (server-generated int64 values read
+// back from our own DB, never external/user input), and libpqxx has no
+// established convention in this codebase for binding a std::vector as a
+// SQL array parameter (see next_gp_rotation_batch's other params, which are
+// all scalars) -- formatting trusted integers as decimal literals carries
+// no injection risk and avoids introducing that pattern for a single
+// caller.
+std::string build_exclusion_clause(const std::vector<std::int64_t>& exclude_ids) {
+    if (exclude_ids.empty()) {
+        return "";
+    }
+    std::ostringstream clause;
+    clause << " AND norad_cat_id NOT IN (";
+    for (std::size_t i = 0; i < exclude_ids.size(); ++i) {
+        if (i > 0) {
+            clause << ',';
+        }
+        clause << exclude_ids[i];
+    }
+    clause << ')';
+    return clause.str();
+}
+} // namespace
 
 DbWriter::DbWriter(pqxx::connection& conn) : conn_(conn) {}
 
@@ -179,7 +208,8 @@ void DbWriter::mark_poller_run(const std::string& poller_name) {
     txn.commit();
 }
 
-std::vector<std::int64_t> DbWriter::next_gp_rotation_batch(int batch_size) {
+std::vector<std::int64_t> DbWriter::next_gp_rotation_batch(
+    int batch_size, const std::vector<std::int64_t>& exclude_ids) {
     pqxx::work txn(conn_);
 
     const pqxx::result cursor_rows =
@@ -191,11 +221,12 @@ std::vector<std::int64_t> DbWriter::next_gp_rotation_batch(int batch_size) {
                                      ? cursor_rows[0][0].as<std::int64_t>()
                                      : -1;
 
+    const std::string exclusion = build_exclusion_clause(exclude_ids);
     std::vector<std::int64_t> batch;
 
     const pqxx::result primary_rows = txn.exec(
-        "SELECT norad_cat_id FROM objects WHERE decay_date IS NULL AND norad_cat_id > $1 "
-        "ORDER BY norad_cat_id LIMIT $2",
+        "SELECT norad_cat_id FROM objects WHERE decay_date IS NULL AND norad_cat_id > $1" + exclusion +
+        " ORDER BY norad_cat_id LIMIT $2",
         pqxx::params{cursor, batch_size});
     for (const auto& row : primary_rows) {
         batch.push_back(row[0].as<std::int64_t>());
@@ -207,8 +238,8 @@ std::vector<std::int64_t> DbWriter::next_gp_rotation_batch(int batch_size) {
     if (static_cast<int>(batch.size()) < batch_size) {
         const int remaining = batch_size - static_cast<int>(batch.size());
         const pqxx::result wrap_rows = txn.exec(
-            "SELECT norad_cat_id FROM objects WHERE decay_date IS NULL "
-            "ORDER BY norad_cat_id LIMIT $1",
+            "SELECT norad_cat_id FROM objects WHERE decay_date IS NULL" + exclusion +
+            " ORDER BY norad_cat_id LIMIT $1",
             pqxx::params{remaining});
         for (const auto& row : wrap_rows) {
             batch.push_back(row[0].as<std::int64_t>());
@@ -217,6 +248,24 @@ std::vector<std::int64_t> DbWriter::next_gp_rotation_batch(int batch_size) {
 
     txn.commit();
     return batch;
+}
+
+std::vector<std::int64_t> DbWriter::top_gp_hot_targets(int limit) {
+    pqxx::work txn(conn_);
+    const pqxx::result rows = txn.exec(
+        "SELECT norad_cat_id FROM objects "
+        "WHERE decay_date IS NULL AND (featured OR hit_count > 0) "
+        "ORDER BY featured DESC, hit_count DESC, norad_cat_id ASC "
+        "LIMIT $1",
+        pqxx::params{limit});
+    txn.commit();
+
+    std::vector<std::int64_t> ids;
+    ids.reserve(rows.size());
+    for (const auto& row : rows) {
+        ids.push_back(row[0].as<std::int64_t>());
+    }
+    return ids;
 }
 
 void DbWriter::advance_gp_rotation_cursor(std::int64_t new_cursor) {

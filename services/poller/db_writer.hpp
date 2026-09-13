@@ -124,13 +124,34 @@ public:
     // advance_gp_rotation_cursor() only after the batch this returns has
     // actually been successfully processed, so a failed request doesn't
     // silently skip a chunk of the catalog forever.
-    std::vector<std::int64_t> next_gp_rotation_batch(int batch_size);
+    //
+    // `exclude_ids` (typically the batch just returned by
+    // top_gp_hot_targets()) is subtracted from both the primary and
+    // wraparound selects, so an object already covered by the hot slice
+    // this run doesn't also consume a rotation slot -- every requested id
+    // stays unique without the caller needing to dedup the two lists
+    // itself.
+    std::vector<std::int64_t> next_gp_rotation_batch(int batch_size, const std::vector<std::int64_t>& exclude_ids);
 
     // Persists `new_cursor` (the highest norad_cat_id covered by the batch
     // just processed, in rotation order -- i.e. the last element of what
     // next_gp_rotation_batch() returned) as the rotation's starting point
     // for next time.
     void advance_gp_rotation_cursor(std::int64_t new_cursor);
+
+    // Returns up to `limit` NORAD IDs to always include in GpPoller's
+    // hourly "hot" slice: objects marked `featured` (a curated, hand-
+    // verified seed list -- see db/migrations/007_add_featured_objects.sql)
+    // or with real hit_count > 0 (actual site traffic), ranked featured
+    // first, then by hit_count descending.
+    //
+    // Deliberately NOT padded to `limit` with never-viewed, non-featured
+    // objects the way /objects/popular's ranking is (see that endpoint's
+    // comment in routes.cpp for why padding with arbitrary low-numbered
+    // catalog entries isn't real "hot") -- returning fewer than `limit`
+    // just means next_gp_rotation_batch() below fills the rest of the
+    // request from the ordinary rotation instead.
+    std::vector<std::int64_t> top_gp_hot_targets(int limit);
 
 private:
     pqxx::connection& conn_;

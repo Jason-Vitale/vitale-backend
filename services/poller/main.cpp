@@ -22,13 +22,23 @@ namespace {
 constexpr const char* kGpInterval = "1 hour";
 constexpr const char* kSatcatInterval = "24 hours";
 
-// GpPoller rotates through the whole `objects` catalog (~35k rows) rather
-// than a fixed watchlist, 500 at a time per hourly request (see
-// DbWriter::next_gp_rotation_batch). 500 isn't confirmed against
-// Space-Track's own undocumented ceiling -- support hasn't answered on
-// it -- but matches the empirically-found reliable batch size other
-// Space-Track consumers (e.g. IBM's spacetech-ssa) have published.
-constexpr int kGpRotationBatchSize = 500;
+// GpPoller requests this many objects total per hourly run. Not confirmed
+// against Space-Track's own undocumented ceiling -- support hasn't
+// answered on it -- but matches the empirically-found reliable batch size
+// other Space-Track consumers (e.g. IBM's spacetech-ssa) have published.
+constexpr int kGpBatchSize = 500;
+
+// Of each hourly batch, up to this many slots go to DbWriter::
+// top_gp_hot_targets() -- featured/high-traffic objects re-requested every
+// run instead of waiting for the rotation to reach them -- with whatever's
+// left going to DbWriter::next_gp_rotation_batch()'s ordinary sweep through
+// the rest of the ~35k-object catalog. top_gp_hot_targets() isn't padded
+// out to this number (see its declaration), so early on -- before real
+// site traffic and the featured seed list add up to 200 -- most of the
+// batch still goes to rotation; this is a ceiling, not a guarantee.
+constexpr int kGpMaxHotSlots = 200;
+static_assert(kGpMaxHotSlots <= kGpBatchSize,
+              "hot slice can't be larger than the whole batch it's carved out of");
 
 // Wall-clock timestamp in US Eastern time (EST/EDT, DST-aware), down to the
 // millisecond, for log lines that mark when a run happened. Uses the
@@ -179,19 +189,23 @@ int main() {
         }
 
         if (gp_due) {
-            // Fetched fresh each run, not at process startup: the batch is
-            // this run's slice of the ongoing rotation, computed from
-            // wherever the last successful run's cursor left off.
-            const std::vector<std::int64_t> gp_targets =
-                scheduler_state.next_gp_rotation_batch(kGpRotationBatchSize);
+            // Fetched fresh each run, not at process startup. Hot targets
+            // come first so the rotation only has to fill whatever
+            // capacity is left in kGpBatchSize -- see the comments on both
+            // constants above for why the split isn't a fixed 200/300.
+            const std::vector<std::int64_t> hot_targets = scheduler_state.top_gp_hot_targets(kGpMaxHotSlots);
+            const std::vector<std::int64_t> rotation_targets =
+                scheduler_state.next_gp_rotation_batch(kGpBatchSize - static_cast<int>(hot_targets.size()), hot_targets);
 
-            std::cout << "[scheduler] GpPoller rotation batch: " << gp_targets.size() << " object(s)";
-            if (!gp_targets.empty()) {
-                std::cout << " spanning norad_cat_id " << gp_targets.front() << ".." << gp_targets.back();
+            std::cout << "[scheduler] GpPoller batch: " << hot_targets.size() << " hot object(s), "
+                      << rotation_targets.size() << " rotation object(s)";
+            if (!rotation_targets.empty()) {
+                std::cout << " spanning norad_cat_id " << rotation_targets.front() << ".."
+                          << rotation_targets.back();
             }
             std::cout << '\n';
 
-            vitale::poller::GpPoller gp_poller(client, conn, gp_targets);
+            vitale::poller::GpPoller gp_poller(client, conn, hot_targets, rotation_targets);
             std::cout << "[scheduler] running GpPoller\n";
             gp_poller.run();
         } else {

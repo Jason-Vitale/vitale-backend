@@ -8,27 +8,37 @@
 
 namespace vitale::poller {
 
-GpPoller::GpPoller(SpaceTrackClient& client, pqxx::connection& conn, std::vector<std::int64_t> target_norad_ids)
+GpPoller::GpPoller(SpaceTrackClient& client, pqxx::connection& conn, std::vector<std::int64_t> hot_target_ids,
+                    std::vector<std::int64_t> rotation_target_ids)
     : Poller(client), writer_(conn), registry_(rule_engine::make_default_rule_registry()),
-      target_norad_ids_(std::move(target_norad_ids)) {}
+      hot_target_ids_(std::move(hot_target_ids)), rotation_target_ids_(std::move(rotation_target_ids)) {}
 
 std::string GpPoller::build_query_url() const {
-    if (target_norad_ids_.empty()) {
+    if (hot_target_ids_.empty() && rotation_target_ids_.empty()) {
         throw std::runtime_error("GpPoller has no target NORAD IDs configured");
     }
 
     std::ostringstream ids;
-    for (std::size_t i = 0; i < target_norad_ids_.size(); ++i) {
-        if (i > 0) {
+    bool first = true;
+    for (const std::int64_t id : hot_target_ids_) {
+        if (!first) {
             ids << ',';
         }
-        ids << target_norad_ids_[i];
+        ids << id;
+        first = false;
+    }
+    for (const std::int64_t id : rotation_target_ids_) {
+        if (!first) {
+            ids << ',';
+        }
+        ids << id;
+        first = false;
     }
 
     // Confirmed against Space-Track docs: every target ID is batched into
     // this ONE query -- the gp class's 1 request/hour limit is per request,
     // not per object, and per-satellite request loops are explicitly
-    // prohibited. Batch size (see main.cpp's kGpRotationBatchSize) is 500,
+    // prohibited. Batch size (see main.cpp's kGpBatchSize) is 500,
     // matching the empirically-found reliable ceiling other Space-Track
     // consumers (e.g. IBM's spacetech-ssa) have documented -- Space-Track's
     // own docs still don't state a hard max, and support hasn't answered on
@@ -55,8 +65,9 @@ void GpPoller::process_response(const std::string& json_body) {
     // from "Space-Track's response silently dropped some of the N we asked
     // for" (e.g. objects whose most recent TLE falls outside the epoch
     // filter) from "the per-record loop below never ran".
-    std::cout << "gp poller: requested " << target_norad_ids_.size() << " target(s), received "
-              << records.size() << " record(s) from Space-Track\n";
+    std::cout << "gp poller: requested " << (hot_target_ids_.size() + rotation_target_ids_.size())
+              << " target(s) (" << hot_target_ids_.size() << " hot, " << rotation_target_ids_.size()
+              << " rotation), received " << records.size() << " record(s) from Space-Track\n";
 
     // Per-object status (checking/unchanged/inserted) is deliberately NOT
     // logged individually here, unlike the old 12-object watchlist -- at up
@@ -100,14 +111,26 @@ void GpPoller::process_response(const std::string& json_body) {
 
     // Advances the rotation cursor only once we've actually heard back from
     // Space-Track for this batch (reaching here requires build_query_url()
-    // and the fetch to have both succeeded, so target_norad_ids_ is
-    // guaranteed non-empty) -- a failed request never reaches this line, so
-    // it can't silently skip a chunk of the catalog. A per-record exception
-    // above doesn't block this either: that's an isolated bad record, not a
-    // reason to keep re-requesting the same batch forever.
-    const std::int64_t new_cursor = target_norad_ids_.back();
-    writer_.advance_gp_rotation_cursor(new_cursor);
-    std::cout << "gp poller: rotation cursor advanced to norad " << new_cursor << '\n';
+    // and the fetch to have both succeeded) -- a failed request never
+    // reaches this line, so it can't silently skip a chunk of the catalog.
+    // A per-record exception above doesn't block this either: that's an
+    // isolated bad record, not a reason to keep re-requesting the same
+    // batch forever.
+    //
+    // Uses rotation_target_ids_ only, never hot_target_ids_: hot ids are a
+    // curated/popularity-ranked watchlist scattered arbitrarily across the
+    // catalog's id space, not a contiguous slice in norad_cat_id order, so
+    // treating one of them as "the highest id covered so far" would
+    // corrupt the cursor. Rotation can be empty in principle (if the hot
+    // slice alone filled the whole request), in which case there's nothing
+    // to advance past this run.
+    if (!rotation_target_ids_.empty()) {
+        const std::int64_t new_cursor = rotation_target_ids_.back();
+        writer_.advance_gp_rotation_cursor(new_cursor);
+        std::cout << "gp poller: rotation cursor advanced to norad " << new_cursor << '\n';
+    } else {
+        std::cout << "gp poller: no rotation targets this run, cursor unchanged\n";
+    }
 }
 
 } // namespace vitale::poller
